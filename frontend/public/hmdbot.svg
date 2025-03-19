@@ -1,0 +1,35 @@
+<svg width="300" height="300" viewBox="0 0 300 300" xmlns="http://www.w3.org/2000/svg">
+  <style>
+    :root {
+      --primaryColor: #0C53A0;
+      --secondaryColor: #83AFD3;
+      --textColor: #333333;
+    }
+  </style>
+  <defs>
+    <radialGradient id="backgroundGradient" cx="0.5" cy="0.4" r="0.8">
+      <stop offset="0%" stop-color="#ffffff"/>
+      <stop offset="100%" stop-color="#eaf6ff"/>
+    </radialGradient>
+    <linearGradient id="robotBodyGradient" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="var(--primaryColor)"/>
+      <stop offset="100%" stop-color="var(--secondaryColor)"/>
+    </linearGradient>
+    <linearGradient id="dbGradient" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="var(--secondaryColor)"/>
+      <stop offset="100%" stop-color="#ffffff"/>
+    </linearGradient>
+  </defs>
+  <rect id="background" width="100%" height="100%" fill="url(#backgroundGradient)"/>
+  <circle id="antennaTip" cx="150" cy="40" r="6" fill="var(--secondaryColor)"/>
+  <rect id="antennaStem" x="148" y="45" width="4" height="15" fill="var(--primaryColor)"/>
+  <rect id="robotHead" x="105" y="60" width="90" height="60" rx="12" ry="12" fill="url(#robotBodyGradient)"/>
+  <circle id="leftEye" cx="125" cy="90" r="7" fill="#ffffff"/>
+  <circle id="rightEye" cx="175" cy="90" r="7" fill="#ffffff"/>
+  <ellipse id="dbTop" cx="150" cy="145" rx="45" ry="15" fill="url(#dbGradient)"/>
+  <rect id="dbMiddle" x="105" y="145" width="90" height="40" fill="url(#dbGradient)"/>
+  <ellipse id="dbBottom" cx="150" cy="185" rx="45" ry="15" fill="url(#dbGradient)"/>
+  <text id="logoTitle" x="150" y="240" fill="var(--textColor)" font-family="Arial, sans-serif" font-size="32" font-weight="bold" text-anchor="middle">
+    HMDBot
+  </text>
+</svg>
