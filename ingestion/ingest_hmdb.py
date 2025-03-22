@@ -13,37 +13,29 @@ from population_logic import (
 uri, user, password = 'bolt://localhost:7687', os.getenv("NEO4J_USER"), os.getenv("NEO4J_PASSWORD")
 neo4j_conn = Neo4jConnection(uri, user, password, batch_size=10000)
 
-# clear_neo4j_database()
+import time
+
+print("CLEARING DATABASE")
+clear_start = time.time()
+clear_neo4j_database(uri)
+print(f"DONE CLEARING DATABASE in {time.time() - clear_start} seconds")
 
 
-# create_indexes_and_constraints(neo4j_conn)
+print('STARTING INDEXES AND CONSTRAINTS')
+index_start = time.time()
+create_indexes_and_constraints(neo4j_conn)
+print(f'DONE INDEXES AND CONSTRAINTS in {time.time() - index_start} seconds')
 
-def do_it(file):
-    print('Doing ' + file)
-    return build_knowledge_graph_from_hmdb(neo4j_conn, file)
-
-
-# print("Building knowledge graph from HMDB data...")
-
-# serum = do_it('ingestion/HMDB_DATA/serum_metabolites.xml')
-# print('Done ')
-
-# feces = do_it('ingestion/HMDB_DATA/feces_metabolites.xml')
-# print('Done ')
-
-# urine = do_it('ingestion/HMDB_DATA/urine_metabolites.xml')
-# print('Done ')
-
-# saliva = do_it('ingestion/HMDB_DATA/saliva_metabolites.xml')
-# print('Done ')
-
-# csf = do_it('ingestion/HMDB_DATA/csf_metabolites.xml')
-# print('Done ')
-
-# sweat = do_it('ingestion/HMDB_DATA/sweat_metabolites.xml')
-# print('Done ')
+print('STARTING METABOLITES')
+met_start = time.time()
+metabolites = build_knowledge_graph_from_hmdb(neo4j_conn, 'ingestion/HMDB_DATA/hmdb_metabolites.xml')
+print(f"DONE METABOLITES in {time.time() - met_start} seconds")
 
 
-# print("DONE METABOLITES")
+print('STARTING PROTEINS')
+prot_start = time.time()
 proteins = build_knowledge_graph_from_hmdb_proteins(neo4j_conn, 'ingestion/HMDB_DATA/hmdb_proteins.xml')
-# 
+print(f"DONE PROTEINS in {time.time() - prot_start} seconds")
+
+
+print(f"TOTAL TIME: {time.time() - clear_start} seconds")

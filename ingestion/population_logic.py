@@ -1343,10 +1343,6 @@ def parse_full_protein(protein_element: ET.Element, neo4j_connection: Neo4jConne
     Parses a single <protein> element from the HMDB Proteins file and merges its data into the Neo4j knowledge graph.
     """
     protein_accession = get_text(protein_element, "accession")
-    print(f"Processing Protein: {protein_accession}")
-
-    prot_already_exists = neo4j_connection.run_query(f'MATCH (p:Protein) WHERE p.proteinAcc ="{protein_accession}" RETURN p;')
-    print(f"Protein Exists: {prot_already_exists}")
     if not protein_accession:
         return
 

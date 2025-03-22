@@ -5,8 +5,8 @@ from neo4j import GraphDatabase
 # Load environment variables
 load_dotenv()
 
-def clear_neo4j_database(batch_size=10000):
-    neo4j_uri = os.getenv("NEO4J_URI")
+def clear_neo4j_database(uri, batch_size=10000):
+    neo4j_uri = uri
     neo4j_user = os.getenv("NEO4J_USER")
     neo4j_password = os.getenv("NEO4J_PASSWORD")
 
@@ -54,8 +54,3 @@ def clear_neo4j_database(batch_size=10000):
         print("All nodes, relationships, indexes, constraints, and cached property keys have been deleted.")
 
     driver.close()
-
-# Retrieve credentials from environment variables
-
-if __name__ == "__main__":
-    clear_neo4j_database()

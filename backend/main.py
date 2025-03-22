@@ -24,8 +24,8 @@ async def lifespan(app: FastAPI):
     neo4j_user = os.getenv("NEO4J_USER")
     neo4j_password = os.getenv("NEO4J_PASSWORD")
 
-    # groq_api_key = os.getenv("GROQ_API_KEY")
-    groq_api_key = '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'
+    groq_api_key = os.getenv("GROQ_API_KEY")
+
     deepseek_api_key = os.getenv("DEEPSEEK_API_KEY")
 
     # make original connection to neo4j
