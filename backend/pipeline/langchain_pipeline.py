@@ -107,18 +107,11 @@ class LangChainPipeline:
             full_extraction_response = "".join(extraction_accumulator)
             entities = self.entity_parser.parse(full_extraction_response)
 
+            metabolites = []
             for entity in entities.entities:
                 if entity.type == "Metabolite":
-                    # entity = await self._match_entities(entity.name, entity.type)
-                    # print(f"Matched metabolite: {entity}"
-                    entity = entity
-                elif entity.type == "Pathway":
-                    # entity = await self._match_entities(entity.name, entity.type)
-                    # print(f"Matched pathway: {entity}")
-                    entity = entity
-                elif entity.type == "Disease":
-                    entity = await self._match_entities(entity.name, entity.type)
-                    print(f"Matched disease: {entity}")
+                    metabolites.append(entity.name)
+
 
 
             planning_inputs = { "question": user_question, "entities": full_extraction_response, "schema": self.neo4j_schema_text}
@@ -136,7 +129,18 @@ class LangChainPipeline:
                         yield sse_message
                 full_query_response = "".join(query_accumulator)
                 neo4j_results = self.neo4j_connection.run_query(full_query_response)
-                # neo4j_results = neo4j_results + self.neo4j_connection.run_query(f"MATCH (m:Metabolite) WHERE m.name = '' RETURN m.description")
+
+
+                for metabolite in metabolites:
+                    neo4j_results += self.neo4j_connection.run_query(f'''
+                        MATCH (m:Metabolite)
+                        WHERE toLower(m.name) = toLower('{metabolite}')
+                        OR EXISTS {{
+                            MATCH (m)-[:HAS_SYNONYM]->(s:Synonym)
+                            WHERE toLower(s.synonymText) = toLower('{metabolite}')
+                        }}
+                        RETURN m.description
+                    ''')
 
                 yield self._format_message("Results", f"Query results: {neo4j_results}")
 
