@@ -31,6 +31,13 @@ def get_text(parent_element: ET.Element, tag_name: str) -> str:
         return child.text.strip()
     return None
 
+def protein_already_processed(neo4j_connection: Neo4jConnection, protein_accession: str) -> bool:
+    query = "MATCH (p:Protein { proteinAcc: $acc }) RETURN p LIMIT 1"
+    result = neo4j_connection.run_query(query, {"acc": protein_accession})
+    # Depending on your Neo4jConnection implementation, result evaluation might vary.
+    return bool(result)
+
+
 ###########################################################################
 # Neo4j Creation Functions
 ###########################################################################
@@ -1344,6 +1351,10 @@ def parse_full_protein(protein_element: ET.Element, neo4j_connection: Neo4jConne
     """
     protein_accession = get_text(protein_element, "accession")
     if not protein_accession:
+        return
+    
+    if protein_already_processed(neo4j_connection, protein_accession):
+        print(f"Skipping protein {protein_accession} as it is already processed.")
         return
 
     # Basic protein fields
