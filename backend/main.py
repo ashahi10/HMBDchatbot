@@ -45,8 +45,8 @@ async def lifespan(app: FastAPI):
         },
         "ollama": {
             "provider": LLMProvider.OLLAMA,
-            "query_generator_model_name": "tomasonjo/llama3-text2cypher-demo",
-            "query_summarizer_model": "mistral-nemo:latest",
+            "query_generator_model_name": "deepseek-r1:1.5b",
+            "query_summarizer_model": "deepseek-r1:1.5b",
         },
         "deepseek": {
             "provider": LLMProvider.DEEPSEEK,
