@@ -8,7 +8,6 @@ from dotenv import load_dotenv
 
 from utils.neo4j_connection import Neo4jConnection
 from utils.schema_generator import generate_text_schema
-from services.llm_service import MultiLLMService, LLMProvider
 from pipeline.langchain_pipeline import LangChainPipeline
 from api.query_controller import router as query_router
 
@@ -25,49 +24,25 @@ async def lifespan(app: FastAPI):
     neo4j_user = os.getenv("NEO4J_USER")
     neo4j_password = os.getenv("NEO4J_PASSWORD")
 
-    groq_api_key = os.getenv("GROQ_API_KEY")
-    # groq_api_key = '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'
-
-    # make original connection to neo4j
     neo4j_connection = Neo4jConnection(
         uri=neo4j_uri,
         user=neo4j_user,
         password=neo4j_password
     )
     
-    configs = {
-        "groq": {
-            "provider": LLMProvider.GROQ,
-            "api_key": groq_api_key,
-            "query_model": "qwen-2.5-32b",
-            "summary_model": "qwen-2.5-32b",
-        },
-        "ollama": {
-            "provider": LLMProvider.OLLAMA,
-            "query_model": "deepseek-r1:1.5b",
-            "summary_model": "deepseek-r1:1.5b",
-        }
-    }
-
-    provider = "ollama"
-
-    # create llm service - local or remote (ollama or groq)
-    llm_service = MultiLLMService(**configs[provider])
 
     # load db schema - generated on app launch
     neo4j_schema_text = generate_text_schema(neo4j_connection)
     # print(neo4j_schema_text)
 
-    # create query pipeline
+    # create query pipeline with direct ChatOllama integration
     query_pipeline = LangChainPipeline(
-        llm_service=llm_service,
         neo4j_connection=neo4j_connection,
-        neo4j_schema_text=neo4j_schema_text
+        neo4j_schema_text=neo4j_schema_text,
     )
     
     # store these in app state to use in routers
     app.state.neo4j_connection = neo4j_connection
-    app.state.llm_service = llm_service
     app.state.query_pipeline = query_pipeline
     app.state.neo4j_schema_text = neo4j_schema_text
     

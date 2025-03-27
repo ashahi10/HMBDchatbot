@@ -3,9 +3,10 @@ from typing import List, AsyncGenerator, Optional, Any, Dict
 
 from langchain_core.runnables import RunnableSequence, RunnablePassthrough
 from langchain_core.output_parsers import StrOutputParser, PydanticOutputParser
+from langchain_community.chat_models import ChatOllama
+from langchain.callbacks.streaming_stdout import StreamingStdOutCallbackHandler
 from pydantic import BaseModel, Field
 
-from services.llm_service import MultiLLMService
 from pipeline.prompts import entity_prompt, query_plan_prompt, query_prompt, summary_prompt
 
 BAD_RESPONSES = ["```", "json", "```json", "```cypher", "```cypher\n", "```", "cy", "pher", "``"]
@@ -25,23 +26,46 @@ class QueryPlan(BaseModel):
     reasoning: str = Field(..., description="Explanation of the decision")
 
 class LangChainPipeline:
-    def __init__(self, llm_service: MultiLLMService, neo4j_connection: Any, neo4j_schema_text: str):
-        self.llm_service = llm_service
+    def __init__(self, neo4j_connection: Any, neo4j_schema_text: str, 
+                 entity_model: str = "gemma3:1b",
+                 query_plan_model: str = "gemma3:1b",
+                 query_model: str = "gemma3:1b",
+                 summary_model: str = "gemma3:1b"):
         self.neo4j_connection = neo4j_connection
         self.neo4j_schema_text = neo4j_schema_text
+
+        self.entity_model = entity_model
+        self.query_plan_model = query_plan_model
+        self.query_model = query_model
+        self.summary_model = summary_model
+
+        self.neo4j_connection = neo4j_connection
+        self.neo4j_schema_text = neo4j_schema_text
+
 
         self.entity_parser = PydanticOutputParser(pydantic_object=EntityList)
         self.query_plan_parser = PydanticOutputParser(pydantic_object=QueryPlan)
 
-        self.entity_chain = self._create_chain({"question": lambda inp: inp["question"], "schema": lambda _: self.neo4j_schema_text}, entity_prompt, streaming=True, parser=None, model_type="query")
-        self.query_plan_chain = self._create_chain( {"question": lambda inp: inp["question"], "entities": lambda inp: inp["entities"], "schema": lambda _: self.neo4j_schema_text}, query_plan_prompt, streaming=True, parser=None, model_type="query")
-        self.query_chain = self._create_chain({"query_plan": lambda inp: inp["query_plan"], "schema": lambda _: self.neo4j_schema_text}, query_prompt, streaming=True, parser=None, model_type="query")
-        self.summary_chain = self._create_chain( {"query_results": lambda inp: inp["query_results"], "question": lambda inp: inp["question"]}, summary_prompt, streaming=True, parser=None, model_type="summary")
+        self.entity_chain = self._create_chain({"question": lambda inp: inp["question"], "schema": lambda _: self.neo4j_schema_text},
+                                                entity_prompt, streaming=True, parser=None, streaming_model=False, format="json", model_name=self.entity_model)
+        self.query_plan_chain = self._create_chain({"question": lambda inp: inp["question"], "entities": lambda inp: inp["entities"], "schema": lambda _: self.neo4j_schema_text}, 
+                                                   query_plan_prompt, streaming=True, parser=None, streaming_model=False, format="json", model_name=self.query_plan_model)
+        self.query_chain = self._create_chain({"query_plan": lambda inp: inp["query_plan"], "schema": lambda _: self.neo4j_schema_text}, 
+                                              query_prompt, streaming=True, parser=None, streaming_model=False, format="", model_name=self.query_model)
+        self.summary_chain = self._create_chain({"query_results": lambda inp: inp["query_results"], "question": lambda inp: inp["question"]}, 
+                                                summary_prompt, streaming=True, parser=None, streaming_model=True, format="", model_name=self.summary_model)
 
-    def _create_chain(self, assignment_funcs: Dict[str, Any], chain_prompt: Any, streaming: bool, parser: Optional[PydanticOutputParser] = None, model_type: str = "query") -> RunnableSequence:
-        if self.llm_service.provider == "ollama":
-            streaming = False
-        llm = self.llm_service.llm if model_type == "query" else self.llm_service.summary_llm
+    def _get_llm(self, streaming: bool = False, model_name: str = "gemma3:1b", format: str = "json"):
+        return ChatOllama(
+            model=model_name,
+            temperature=0.2,
+            num_ctx=4096,
+            callbacks=[StreamingStdOutCallbackHandler()] if streaming else None,
+            format=format
+        )
+
+    def _create_chain(self, assignment_funcs: Dict[str, Any], chain_prompt: Any, streaming: bool, parser: Optional[PydanticOutputParser] = None, streaming_model: bool = False, format: str = "json", model_name: str = "gemma3:1b") -> RunnableSequence:
+        llm = self._get_llm(streaming=streaming_model, format=format, model_name=model_name)
         chain = RunnablePassthrough.assign(**assignment_funcs) | chain_prompt | llm
         chain |= parser if parser else StrOutputParser()
         return chain
@@ -50,10 +74,10 @@ class LangChainPipeline:
         message = {"section": section, "text": text}
         return f"data:{json.dumps(message)}\n\n"
 
-    async def _process_stream( self, chain: Any, section: str, inputs: Dict[str, Any], accumulator: List[str] ) -> AsyncGenerator[str, None]:
-
+    async def _process_stream(self, chain: Any, section: str, inputs: Dict[str, Any], accumulator: List[str]) -> AsyncGenerator[str, None]:
         buffer = ""
         async for chunk in chain.astream(inputs):
+            print(chunk)
             if not chunk:
                 continue
             chunk_text = str(chunk)
@@ -79,7 +103,6 @@ class LangChainPipeline:
                 if section != "Thinking" and buffer not in BAD_RESPONSES + ["DONE"]:
                     accumulator.append(buffer)
         yield self._format_message(section, "DONE")
-
     
     async def run_pipeline(self, user_question: str) -> AsyncGenerator[str, None]:
         try:
