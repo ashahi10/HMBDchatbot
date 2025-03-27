@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 from utils.neo4j_connection import Neo4jConnection
 from utils.schema_generator import generate_text_schema
 from pipeline.langchain_pipeline import LangChainPipeline
+from pipeline.config import PipelineConfig, ModelConfig, ChainConfig, EntityConfig
 from api.query_controller import router as query_router
 
 import time
@@ -29,24 +30,27 @@ async def lifespan(app: FastAPI):
         password=neo4j_password
     )
     
-
     # load db schema - generated on app launch
     neo4j_schema_text = generate_text_schema(neo4j_connection)
 
     print(neo4j_schema_text)
 
-    # create query pipeline with direct ChatOllama integration
-    query_pipeline = LangChainPipeline(
-        neo4j_connection=neo4j_connection,
+    # Create pipeline configuration
+    pipeline_config = PipelineConfig(
+        models=ModelConfig(),
+        chains=ChainConfig(),
+        entities=EntityConfig(),
         neo4j_schema_text=neo4j_schema_text,
+        neo4j_connection=neo4j_connection
     )
+
+    query_pipeline = LangChainPipeline(config=pipeline_config)
     
     # store these in app state to use in routers
     app.state.neo4j_connection = neo4j_connection
     app.state.query_pipeline = query_pipeline
     app.state.neo4j_schema_text = neo4j_schema_text
     
-    print("running fine")
     print(f"app startup time: {time.time() - start}")
     yield
     # close neo4j connection before shutting down

@@ -14,8 +14,6 @@ def infer_property_type(value: Any) -> str:
         return "LIST"
     elif isinstance(value, dict):
         return "MAP"
-    elif value is None:
-        return "NULL"
     else:
         return type(value).__name__.upper()
 
@@ -90,6 +88,3 @@ def generate_text_schema(neo4j_conn: Neo4jConnection) -> str:
             lines.append(mapping)
     
     return "\n".join(lines)
-
-if __name__ == "__main__":
-    pass

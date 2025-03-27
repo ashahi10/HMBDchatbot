@@ -17,6 +17,7 @@ def match_protein(protein: str):
         RETURN node.gene_name AS gene_name, node.proteinAcc AS proteinAcc, node.protein_name AS protein_name, node.uniprot_id AS uniprot_id, score
         LIMIT 3
     """
+    # CREATE INDEX protein_names_index FOR (n:Protein) ON EACH [n.protein_name, n.proteinAcc, n.uniprot_id, n.uniprot_name n.gene_name, n.name, n.]
     protein_results = neo4j_connection.run_query(protein_query)
 
     if protein_results and len(protein_results) > 0:
@@ -41,4 +42,4 @@ def match_disease(disease: str):
 
 print(match_protein("Creatine kinase"))
 
-print(match_disease("Cancer"))
+print(match_disease("pancreatic cancer"))
