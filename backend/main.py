@@ -25,9 +25,8 @@ async def lifespan(app: FastAPI):
     neo4j_user = os.getenv("NEO4J_USER")
     neo4j_password = os.getenv("NEO4J_PASSWORD")
 
-    # groq_api_key = os.getenv("GROQ_API_KEY")
-    groq_api_key = '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'
-    deepseek_api_key = os.getenv("DEEPSEEK_API_KEY")
+    groq_api_key = os.getenv("GROQ_API_KEY")
+    # groq_api_key = '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'
 
     # make original connection to neo4j
     neo4j_connection = Neo4jConnection(
@@ -40,19 +39,13 @@ async def lifespan(app: FastAPI):
         "groq": {
             "provider": LLMProvider.GROQ,
             "api_key": groq_api_key,
-            "query_generator_model_name": "qwen-2.5-32b",
-            "query_summarizer_model": "qwen-2.5-32b",
+            "query_model": "qwen-2.5-32b",
+            "summary_model": "qwen-2.5-32b",
         },
         "ollama": {
             "provider": LLMProvider.OLLAMA,
-            "query_generator_model_name": "deepseek-r1:1.5b",
-            "query_summarizer_model": "deepseek-r1:1.5b",
-        },
-        "deepseek": {
-            "provider": LLMProvider.DEEPSEEK,
-            "api_key": deepseek_api_key,
-            "query_generator_model_name": "deepseek-chat",
-            "query_summarizer_model": "deepseek-chat",
+            "query_model": "deepseek-r1:1.5b",
+            "summary_model": "deepseek-r1:1.5b",
         }
     }
 

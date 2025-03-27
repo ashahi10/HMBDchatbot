@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 from services.llm_service import MultiLLMService
 from pipeline.prompts import entity_prompt, query_plan_prompt, query_prompt, summary_prompt
 
-BAD_RESPONSES = ["```", "json", "```json", "```cypher", "```cypher\n", "```", "cy", "pher"]
+BAD_RESPONSES = ["```", "json", "```json", "```cypher", "```cypher\n", "```", "cy", "pher", "``"]
 
 class Entity(BaseModel):
     name: str = Field(..., description="The name of the entity")
@@ -25,7 +25,7 @@ class QueryPlan(BaseModel):
     reasoning: str = Field(..., description="Explanation of the decision")
 
 class LangChainPipeline:
-    def __init__(self, llm_service: MultiLLMService, neo4j_connection, neo4j_schema_text: str):
+    def __init__(self, llm_service: MultiLLMService, neo4j_connection: Any, neo4j_schema_text: str):
         self.llm_service = llm_service
         self.neo4j_connection = neo4j_connection
         self.neo4j_schema_text = neo4j_schema_text
@@ -33,146 +33,84 @@ class LangChainPipeline:
         self.entity_parser = PydanticOutputParser(pydantic_object=EntityList)
         self.query_plan_parser = PydanticOutputParser(pydantic_object=QueryPlan)
 
-        self.entity_chain = self._create_chain(
-            {"question": lambda x: x["question"], "schema": lambda _: self.neo4j_schema_text}, 
-            entity_prompt, 
-            streaming=True, 
-            parser=None,
-            model_type="query"
-        )
-        self.query_plan_chain = self._create_chain(
-            {"question": lambda x: x["question"], "entities": lambda x: x["entities"], "schema": lambda _: self.neo4j_schema_text}, 
-            query_plan_prompt, 
-            streaming=True, 
-            parser=None,
-            model_type="query"
-        )
-        self.query_chain = self._create_chain(
-            {"query_plan": lambda x: x["query_plan"], "schema": lambda _: self.neo4j_schema_text}, 
-            query_prompt, 
-            streaming=True, 
-            parser=None,
-            model_type="query"
-        )
-        self.summary_chain = self._create_chain(
-            {"query_results": lambda x: x["query_results"], "question": lambda x: x["question"]}, 
-            summary_prompt, 
-            streaming=True, 
-            parser=None,
-            model_type="summary"
-        )
+        self.entity_chain = self._create_chain({"question": lambda inp: inp["question"], "schema": lambda _: self.neo4j_schema_text}, entity_prompt, streaming=True, parser=None, model_type="query")
+        self.query_plan_chain = self._create_chain( {"question": lambda inp: inp["question"], "entities": lambda inp: inp["entities"], "schema": lambda _: self.neo4j_schema_text}, query_plan_prompt, streaming=True, parser=None, model_type="query")
+        self.query_chain = self._create_chain({"query_plan": lambda inp: inp["query_plan"], "schema": lambda _: self.neo4j_schema_text}, query_prompt, streaming=True, parser=None, model_type="query")
+        self.summary_chain = self._create_chain( {"query_results": lambda inp: inp["query_results"], "question": lambda inp: inp["question"]}, summary_prompt, streaming=True, parser=None, model_type="summary")
 
-    def _create_chain(self, assignment_funcs: dict, chain_prompt, streaming: bool, parser: Optional[PydanticOutputParser] = None, model_type: str = "query") -> RunnableSequence:
+    def _create_chain(self, assignment_funcs: Dict[str, Any], chain_prompt: Any, streaming: bool, parser: Optional[PydanticOutputParser] = None, model_type: str = "query") -> RunnableSequence:
         if self.llm_service.provider == "ollama":
             streaming = False
-            
-        if model_type == "summary":
-            self.llm_service.default_query_model = self.llm_service.default_summary_model
-            
-        chain = RunnablePassthrough.assign(**assignment_funcs) | chain_prompt | self.llm_service.get_langchain_llm(streaming=streaming)
-        
-        if model_type == "summary":
-            self.llm_service.default_query_model = self.llm_service.default_summary_model
-            
-        if parser:
-            chain = chain | parser
-        else:
-            chain = chain | StrOutputParser()
-            
+        llm = self.llm_service.llm if model_type == "query" else self.llm_service.summary_llm
+        chain = RunnablePassthrough.assign(**assignment_funcs) | chain_prompt | llm
+        chain |= parser if parser else StrOutputParser()
         return chain
 
     def _format_message(self, section: str, text: str) -> str:
         message = {"section": section, "text": text}
         return f"data:{json.dumps(message)}\n\n"
 
-    def _process_text_with_thinking(self, text: str) -> tuple[str, str]:
-        """
-        Process text to handle thinking tags and return both the thinking and non-thinking parts.
-        Returns a tuple of (thinking_text, clean_text)
-        """
-        thinking_text = ""
-        clean_text = text
-        
-        # Extract thinking content
-        if "<think>" in text and "</think>" in text:
-            start_idx = text.find("<think>") + len("<think>")
-            end_idx = text.find("</think>")
-            thinking_text = text[start_idx:end_idx].strip()
-            
-            # Remove thinking tags and content from clean text
-            clean_text = text[:text.find("<think>")] + text[text.find("</think>") + len("</think>"):]
-            clean_text = clean_text.strip()
-            
-        return thinking_text, clean_text
+    async def _process_stream( self, chain: Any, section: str, inputs: Dict[str, Any], accumulator: List[str] ) -> AsyncGenerator[str, None]:
 
-    async def _process_stream(self, stream, section: str, inputs: Dict[str, Any]) -> AsyncGenerator[str, None]:
-        async for chunk in stream.astream(inputs):
-            if chunk:
-                chunk_text = chunk if isinstance(chunk, str) else str(chunk)
-                thinking_text, clean_text = self._process_text_with_thinking(chunk_text)
-                
-                # Yield thinking text if it exists
-                if thinking_text:
-                    yield self._format_message("Thinking", thinking_text)
-                
-                # Yield clean text if it exists
-                if clean_text:
-                    yield self._format_message(section, clean_text)
-                    
+        buffer = ""
+        async for chunk in chain.astream(inputs):
+            if not chunk:
+                continue
+            chunk_text = str(chunk)
+            buffer += chunk_text
+            while "<think>" in buffer and "</think>" in buffer:
+                pre, _, remainder = buffer.partition("<think>")
+                thinking, _, post = remainder.partition("</think>")
+                if thinking.strip():
+                    yield self._format_message("Thinking", thinking.strip())
+                buffer = pre + post
+            if buffer and "<think>" not in buffer:
+                yield self._format_message(section, buffer)
+                if section != "Thinking" and buffer not in BAD_RESPONSES + ["DONE"]:
+                    accumulator.append(buffer)
+                buffer = ""
+        if buffer:
+            if "<think>" in buffer and "</think>" in buffer:
+                thinking = buffer.split("<think>")[1].split("</think>")[0].strip()
+                if thinking:
+                    yield self._format_message("Thinking", thinking)
+            else:
+                yield self._format_message(section, buffer)
+                if section != "Thinking" and buffer not in BAD_RESPONSES + ["DONE"]:
+                    accumulator.append(buffer)
         yield self._format_message(section, "DONE")
 
-    async def _stream_and_accumulate(self, chain, section: str, inputs: Dict[str, Any], accumulator: List[str]) -> AsyncGenerator[str, None]:
-        async for sse_message in self._process_stream(chain, section, inputs):
-            try:
-                message_json = sse_message[len("data:"):].strip()
-                message = json.loads(message_json)
-            except json.JSONDecodeError:
-                continue
-                
-            # Only accumulate non-thinking messages that aren't in BAD_RESPONSES
-            if message.get("section") != "Thinking" and message.get("text") not in BAD_RESPONSES + ["DONE"]:
-                accumulator.append(message.get("text", ""))
-            yield sse_message
-
-    async def _match_entities(self, entity_name: str, entity_type: str) -> List[dict]:
-        pass
-
+    
     async def run_pipeline(self, user_question: str) -> AsyncGenerator[str, None]:
         try:
+            # --- Entity Extraction ---
             extraction_inputs = {"question": user_question, "schema": self.neo4j_schema_text}
             extraction_accumulator: List[str] = []
-            async for sse_message in self._stream_and_accumulate(self.entity_chain, "Extracting entities", extraction_inputs, extraction_accumulator):
-                yield sse_message
-            full_extraction_response = "".join(extraction_accumulator)
-            print(full_extraction_response)
-            entities = self.entity_parser.parse(full_extraction_response)
+            async for message in self._process_stream(self.entity_chain, "Extracting entities", extraction_inputs, extraction_accumulator):
+                yield message
+            extraction_response = "".join(extraction_accumulator)
+            entities = self.entity_parser.parse(extraction_response)
 
-            metabolites = []
-            for entity in entities.entities:
-                if entity.type == "Metabolite":
-                    metabolites.append(entity.name)
-
-
-
-            planning_inputs = { "question": user_question, "entities": full_extraction_response, "schema": self.neo4j_schema_text}
+            # --- Query Planning ---
+            planning_inputs = {"question": user_question, "entities": extraction_response, "schema": self.neo4j_schema_text}
             planning_accumulator: List[str] = []
-            async for sse_message in self._stream_and_accumulate(self.query_plan_chain, "Query planning", planning_inputs, planning_accumulator):
-                yield sse_message
-            full_query_plan_response = "".join(planning_accumulator)
-            query_plan = self.query_plan_parser.parse(full_query_plan_response)
+            async for message in self._process_stream(self.query_plan_chain, "Query planning", planning_inputs, planning_accumulator):
+                yield message
+            query_plan = self.query_plan_parser.parse("".join(planning_accumulator))
 
-
-            query_inputs = {"query_plan": query_plan, "schema": self.neo4j_schema_text}
-            query_accumulator: List[str] = []
+            # --- Query Execution & Summary ---
             if query_plan.should_query:
-                async for sse_message in self._stream_and_accumulate(self.query_chain, "Query execution", query_inputs, query_accumulator):
-                        yield sse_message
-                full_query_response = "".join(query_accumulator)
-                neo4j_results = self.neo4j_connection.run_query(full_query_response)
+                query_inputs = {"query_plan": query_plan, "schema": self.neo4j_schema_text}
+                query_accumulator: List[str] = []
+                async for message in self._process_stream(self.query_chain, "Query execution", query_inputs, query_accumulator):
+                    yield message
+                query_response = "".join(query_accumulator)
+                neo4j_results = self.neo4j_connection.run_query(query_response)
 
-
+                # Run additional queries for metabolites if needed
+                metabolites = [entity.name for entity in entities.entities if entity.type == "Metabolite"]
                 for metabolite in metabolites:
-                    neo4j_results += self.neo4j_connection.run_query(f'''
+                    neo4j_results += self.neo4j_connection.run_query(f"""
                         MATCH (m:Metabolite)
                         WHERE toLower(m.name) = toLower('{metabolite}')
                         OR EXISTS {{
@@ -180,19 +118,14 @@ class LangChainPipeline:
                             WHERE toLower(s.synonymText) = toLower('{metabolite}')
                         }}
                         RETURN m.description
-                    ''')
-
+                    """)
                 yield self._format_message("Results", f"Query results: {neo4j_results}")
 
                 summary_inputs = {"query_results": neo4j_results, "question": user_question}
                 summary_accumulator: List[str] = []
-                async for sse_message in self._stream_and_accumulate(self.summary_chain, "Summary", summary_inputs, summary_accumulator):
-                    yield sse_message
-                full_summary_response = "".join(summary_accumulator)
-                print(full_summary_response)
-
+                async for message in self._process_stream(self.summary_chain, "Summary", summary_inputs, summary_accumulator):
+                    yield message
             else:
                 yield self._format_message("Response", f"No database query needed. {query_plan.reasoning}")
-
-        except Exception as e:
-            yield self._format_message("Error", f"Error in pipeline: {e}")
+        except Exception as error:
+            yield self._format_message("Error", f"Error in pipeline: {error}")
