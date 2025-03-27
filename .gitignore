@@ -6,3 +6,5 @@ data
 hmdb_cache.sqlite
 hmdb_results_with_cache.txt
 hmdb_results.txt
+
+*.xml

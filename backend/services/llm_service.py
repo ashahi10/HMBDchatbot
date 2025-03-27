@@ -43,7 +43,7 @@ class MultiLLMService:
                 model=self.default_query_model,
                 temperature=0.2,
                 num_ctx=4096,
-                streaming=streaming
+                callbacks=None
             )
         elif self.provider == LLMProvider.DEEPSEEK:
             return ChatOpenAI(

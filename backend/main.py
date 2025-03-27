@@ -12,16 +12,21 @@ from services.llm_service import MultiLLMService, LLMProvider
 from pipeline.langchain_pipeline import LangChainPipeline
 from api.query_controller import router as query_router
 
+import time
+
 load_dotenv()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    start = time.time()
     # load env variables, changing .env file will allow swapping bw kgs
     neo4j_uri = os.getenv("NEO4J_URI")
+    print(neo4j_uri)
     neo4j_user = os.getenv("NEO4J_USER")
     neo4j_password = os.getenv("NEO4J_PASSWORD")
 
-    groq_api_key = os.getenv("GROQ_API_KEY")
+    # groq_api_key = os.getenv("GROQ_API_KEY")
+    groq_api_key = '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'
     deepseek_api_key = os.getenv("DEEPSEEK_API_KEY")
 
     # make original connection to neo4j
@@ -40,8 +45,8 @@ async def lifespan(app: FastAPI):
         },
         "ollama": {
             "provider": LLMProvider.OLLAMA,
-            "query_generator_model_name": "tomasonjo/llama3-text2cypher-demo",
-            "query_summarizer_model": "mistral-nemo:latest",
+            "query_generator_model_name": "deepseek-r1:1.5b",
+            "query_summarizer_model": "deepseek-r1:1.5b",
         },
         "deepseek": {
             "provider": LLMProvider.DEEPSEEK,
@@ -51,7 +56,7 @@ async def lifespan(app: FastAPI):
         }
     }
 
-    provider = "groq"
+    provider = "ollama"
 
     # create llm service - local or remote (ollama or groq)
     llm_service = MultiLLMService(**configs[provider])
@@ -74,6 +79,7 @@ async def lifespan(app: FastAPI):
     app.state.neo4j_schema_text = neo4j_schema_text
     
     print("running fine")
+    print(f"app startup time: {time.time() - start}")
     yield
     # close neo4j connection before shutting down
     neo4j_connection.close()

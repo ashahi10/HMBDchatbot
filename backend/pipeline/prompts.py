@@ -121,7 +121,7 @@ query_prompt = PromptTemplate.from_template("""
 summary_prompt = PromptTemplate.from_template("""
     You are a verbose and detailed summarizer.
                                               
-    Given the following results from a Neo4j query, create a detailed summary of the answer to the user question.
+    Given the following results from a Neo4j query, create a detailed summary of the answer to the user question. This is your knowledge now so don't say things like "Based on the results" or "It seems that".
 
     The results are a list of dictionaries, each representing a node in the database.
                                               
