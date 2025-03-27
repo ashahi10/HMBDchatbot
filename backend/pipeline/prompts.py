@@ -10,7 +10,8 @@ Answer:
 """)
                                                 
 entity_prompt = PromptTemplate.from_template("""
-You are an expert entity-extraction system designed to identify entities for potential Neo4j database queries.
+You are an expert HMDB entity-extraction system designed to identify entities for potential Neo4j database queries.
+
 
 Your responsibilities:
 1. Carefully examine the user question.
@@ -43,9 +44,16 @@ Format your final response as a JSON object containing an "entities" key with a 
     }}
   ]
 }}
+                                             
+If you cannot find any entities, respond with an empty JSON object:
+{{
+  "entities": []
+}}
 
 DO NOT add any text outside of this JSON object.
-
+                                             
+Remember that the user is asking about HMDB, so you should only be looking for metabolites and proteins.
+                                             
 Database Schema:
 {schema}
 
@@ -147,6 +155,13 @@ GUIDELINES:
 
 Query Results (list of dictionaries):
 {query_results}
+
+User Question:
+{question}
+""")
+
+other_prompt = PromptTemplate.from_template("""
+You are a helpful assistant that can answer questions about the Proteins and Metabolites in the database.
 
 User Question:
 {question}

@@ -32,7 +32,8 @@ async def lifespan(app: FastAPI):
 
     # load db schema - generated on app launch
     neo4j_schema_text = generate_text_schema(neo4j_connection)
-    # print(neo4j_schema_text)
+
+    print(neo4j_schema_text)
 
     # create query pipeline with direct ChatOllama integration
     query_pipeline = LangChainPipeline(

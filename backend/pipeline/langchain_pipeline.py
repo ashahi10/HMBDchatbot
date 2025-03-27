@@ -7,7 +7,7 @@ from langchain_ollama import ChatOllama
 from langchain.callbacks.streaming_stdout import StreamingStdOutCallbackHandler
 from pydantic import BaseModel, Field
 
-from pipeline.prompts import entity_prompt, query_plan_prompt, query_prompt, summary_prompt
+from pipeline.prompts import entity_prompt, query_plan_prompt, query_prompt, summary_prompt, other_prompt
 
 BAD_RESPONSES = ["```", "json", "```json", "```cypher", "```cypher\n", "```", "cy", "pher", "``"]
 
@@ -29,8 +29,9 @@ class LangChainPipeline:
     def __init__(self, neo4j_connection: Any, neo4j_schema_text: str, 
                  entity_model: str = "mistral-nemo:latest",
                  query_plan_model: str = "mistral-nemo:latest",
-                 query_model: str = "mistral-nemo:latest",
-                 summary_model: str = "mistral-nemo:latest"):
+                 query_model: str = "tomasonjo/llama3-text2cypher-demo",
+                 summary_model: str = "mistral-nemo:latest",
+                 other_model: str = "mistral-nemo:latest"):
         self.neo4j_connection = neo4j_connection
         self.neo4j_schema_text = neo4j_schema_text
 
@@ -38,7 +39,7 @@ class LangChainPipeline:
         self.query_plan_model = query_plan_model
         self.query_model = query_model
         self.summary_model = summary_model
-
+        self.other_model = other_model
         self.neo4j_connection = neo4j_connection
         self.neo4j_schema_text = neo4j_schema_text
 
@@ -54,8 +55,11 @@ class LangChainPipeline:
                                               query_prompt, streaming=True, parser=None, streaming_model=False, format="", model_name=self.query_model)
         self.summary_chain = self._create_chain({"query_results": lambda inp: inp["query_results"], "question": lambda inp: inp["question"]}, 
                                                 summary_prompt, streaming=True, parser=None, streaming_model=True, format="", model_name=self.summary_model)
+        self.other_chain = self._create_chain({"question": lambda inp: inp["question"]}, 
+                                              other_prompt, streaming=True, parser=None, streaming_model=True, format="", model_name=self.other_model)
 
-    def _get_llm(self, streaming: bool = False, model_name: str = "mistral-nemo:latest", format: str = "json"):
+    def _get_llm(self, model_name: str, streaming: bool = False, format: str = "json"):
+
         return ChatOllama(
             base_url="https://2vlm5q6h-11434.usw2.devtunnels.ms/",
             model=model_name,
@@ -74,6 +78,47 @@ class LangChainPipeline:
     def _format_message(self, section: str, text: str) -> str:
         message = {"section": section, "text": text}
         return f"data:{json.dumps(message)}\n\n"
+
+    def match_metabolite(self, metabolite: str):
+        metabolite_query = f"""
+            CALL db.index.fulltext.queryNodes("metabolite_names", "{metabolite}~0.5") YIELD node, score
+            RETURN node.name AS name, score
+            LIMIT 3
+        """
+        metabolite_results = self.neo4j_connection.run_query(metabolite_query)
+        
+        for result in metabolite_results:
+            if result['score'] > 0.5:
+                return result['name']
+        
+        synonyms_query_fuzzy = f"""
+            CALL db.index.fulltext.queryNodes("synonymsFullText", "{metabolite}~0.3") YIELD node, score
+            RETURN node.synonymText AS synonymText, score
+            LIMIT 3
+        """
+        synonyms_results = self.neo4j_connection.run_query(synonyms_query_fuzzy)
+        
+        if not synonyms_results or len(synonyms_results) == 0:
+            synonyms_query_wildcard = f"""
+                CALL db.index.fulltext.queryNodes("synonymsFullText", "{metabolite}*") YIELD node, score
+                RETURN node.synonymText AS synonymText, score
+                LIMIT 3
+            """
+            synonyms_results = self.neo4j_connection.run_query(synonyms_query_wildcard)
+        
+        for synonym_result in synonyms_results:
+            if synonym_result['score'] > 2:
+                associated_metabolite_query = f"""
+                    MATCH (m:Metabolite)-[:HAS_SYNONYM]->(s:Synonym)
+                    WHERE toLower(s.synonymText) = toLower("{synonym_result['synonymText']}")
+                    RETURN m.name AS name
+                    LIMIT 1
+                """
+                metabolite_match = self.neo4j_connection.run_query(associated_metabolite_query)
+                if metabolite_match and len(metabolite_match) > 0:
+                    return metabolite_match[0]['name']
+        
+        return None
 
     async def _process_stream(self, chain: Any, section: str, inputs: Dict[str, Any], accumulator: List[str]) -> AsyncGenerator[str, None]:
         buffer = ""
@@ -106,22 +151,28 @@ class LangChainPipeline:
     
     async def run_pipeline(self, user_question: str) -> AsyncGenerator[str, None]:
         try:
-            # --- Entity Extraction ---
+
             extraction_inputs = {"question": user_question, "schema": self.neo4j_schema_text}
             extraction_accumulator: List[str] = []
             async for message in self._process_stream(self.entity_chain, "Extracting entities", extraction_inputs, extraction_accumulator):
                 yield message
             extraction_response = "".join(extraction_accumulator)
-            entities = self.entity_parser.parse(extraction_response)
 
-            # --- Query Planning ---
+            try:
+                entities = self.entity_parser.parse(extraction_response)
+            except Exception as e:
+                entities = EntityList(entities=[])
+
+            for entity in entities.entities:
+                if entity.type == "Metabolite":
+                    entity.name = self.match_metabolite(entity.name)
+            
             planning_inputs = {"question": user_question, "entities": extraction_response, "schema": self.neo4j_schema_text}
             planning_accumulator: List[str] = []
             async for message in self._process_stream(self.query_plan_chain, "Query planning", planning_inputs, planning_accumulator):
                 yield message
             query_plan = self.query_plan_parser.parse("".join(planning_accumulator))
 
-            # --- Query Execution & Summary ---
             if query_plan.should_query:
                 query_inputs = {"query_plan": query_plan, "schema": self.neo4j_schema_text}
                 query_accumulator: List[str] = []
@@ -130,7 +181,6 @@ class LangChainPipeline:
                 query_response = "".join(query_accumulator)
                 neo4j_results = self.neo4j_connection.run_query(query_response)
 
-                # Run additional queries for metabolites if needed
                 metabolites = [entity.name for entity in entities.entities if entity.type == "Metabolite"]
                 for metabolite in metabolites:
                     neo4j_results += self.neo4j_connection.run_query(f"""
@@ -149,6 +199,7 @@ class LangChainPipeline:
                 async for message in self._process_stream(self.summary_chain, "Summary", summary_inputs, summary_accumulator):
                     yield message
             else:
-                yield self._format_message("Response", f"No database query needed. {query_plan.reasoning}")
+                async for message in self._process_stream(self.other_chain, "Summary", {"question": user_question}, []):
+                    yield message
         except Exception as error:
             yield self._format_message("Error", f"Error in pipeline: {error}")
