@@ -20,7 +20,6 @@ async def lifespan(app: FastAPI):
     start = time.time()
     # load env variables, changing .env file will allow swapping bw kgs
     neo4j_uri = os.getenv("NEO4J_URI")
-    print(neo4j_uri)
     neo4j_user = os.getenv("NEO4J_USER")
     neo4j_password = os.getenv("NEO4J_PASSWORD")
 

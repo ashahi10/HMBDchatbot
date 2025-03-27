@@ -3,7 +3,7 @@ from typing import List, AsyncGenerator, Optional, Any, Dict
 
 from langchain_core.runnables import RunnableSequence, RunnablePassthrough
 from langchain_core.output_parsers import StrOutputParser, PydanticOutputParser
-from langchain_community.chat_models import ChatOllama
+from langchain_ollama import ChatOllama
 from langchain.callbacks.streaming_stdout import StreamingStdOutCallbackHandler
 from pydantic import BaseModel, Field
 
@@ -27,10 +27,10 @@ class QueryPlan(BaseModel):
 
 class LangChainPipeline:
     def __init__(self, neo4j_connection: Any, neo4j_schema_text: str, 
-                 entity_model: str = "gemma3:1b",
-                 query_plan_model: str = "gemma3:1b",
-                 query_model: str = "gemma3:1b",
-                 summary_model: str = "gemma3:1b"):
+                 entity_model: str = "mistral-nemo:latest",
+                 query_plan_model: str = "mistral-nemo:latest",
+                 query_model: str = "mistral-nemo:latest",
+                 summary_model: str = "mistral-nemo:latest"):
         self.neo4j_connection = neo4j_connection
         self.neo4j_schema_text = neo4j_schema_text
 
@@ -55,8 +55,9 @@ class LangChainPipeline:
         self.summary_chain = self._create_chain({"query_results": lambda inp: inp["query_results"], "question": lambda inp: inp["question"]}, 
                                                 summary_prompt, streaming=True, parser=None, streaming_model=True, format="", model_name=self.summary_model)
 
-    def _get_llm(self, streaming: bool = False, model_name: str = "gemma3:1b", format: str = "json"):
+    def _get_llm(self, streaming: bool = False, model_name: str = "mistral-nemo:latest", format: str = "json"):
         return ChatOllama(
+            base_url="https://2vlm5q6h-11434.usw2.devtunnels.ms/",
             model=model_name,
             temperature=0.2,
             num_ctx=4096,
@@ -64,7 +65,7 @@ class LangChainPipeline:
             format=format
         )
 
-    def _create_chain(self, assignment_funcs: Dict[str, Any], chain_prompt: Any, streaming: bool, parser: Optional[PydanticOutputParser] = None, streaming_model: bool = False, format: str = "json", model_name: str = "gemma3:1b") -> RunnableSequence:
+    def _create_chain(self, assignment_funcs: Dict[str, Any], chain_prompt: Any, streaming: bool, parser: Optional[PydanticOutputParser] = None, streaming_model: bool = False, format: str = "json", model_name: str = "mistral-nemo:latest") -> RunnableSequence:
         llm = self._get_llm(streaming=streaming_model, format=format, model_name=model_name)
         chain = RunnablePassthrough.assign(**assignment_funcs) | chain_prompt | llm
         chain |= parser if parser else StrOutputParser()
@@ -77,7 +78,6 @@ class LangChainPipeline:
     async def _process_stream(self, chain: Any, section: str, inputs: Dict[str, Any], accumulator: List[str]) -> AsyncGenerator[str, None]:
         buffer = ""
         async for chunk in chain.astream(inputs):
-            print(chunk)
             if not chunk:
                 continue
             chunk_text = str(chunk)
