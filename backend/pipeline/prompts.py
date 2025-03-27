@@ -21,9 +21,6 @@ Your responsibilities:
    - type: the most specific entity type (node label) found in the schema
    - confidence: a numerical confidence score (0–1) in your extraction
 
-SPECIAL HANDLING FOR METABOLITES:
-- If an entity might be a metabolite, label it as "Metabolite" with high confidence (e.g., 0.95 or higher).
-- Recognize that users may refer to metabolites using synonyms, so be vigilant about alternate or colloquial names.
 
 MOST IMPORTANTLY:
 - ONLY extract entities that actually appear in the database schema. 
@@ -69,24 +66,17 @@ You are an expert Neo4j query planner. Given the user question, the previously e
 
 1. Whether or not the question should be answered with a Neo4j query (should_query).
 2. The intent of the query if one is needed (query_intent).
-3. Which entities from the extracted list should be used in the query (only if they match the schema).
+3. Which entities from the extracted list should be used in the query (only if they match the schema). Always add extra nodes and relationships to the query plan to ensure you get the most relevant results.
 4. A concise reasoning that explains your decision.
+5. Plan for a query that will return the most relevant results, including:
+   - All relevant and semi-relevant nodes
+   - All relevant and semi-relevant relationships
+   - All relevant and semi-relevant properties
+6. The query must only use node labels, relationships, and properties that actually exist in the database schema.
+7. If the user question cannot be answered from the schema, set should_query to false.
 
-SPECIAL HANDLING FOR METABOLITES:
-- If any entity is labeled "Metabolite", remember that it could have synonyms. 
-- When planning queries involving metabolites, note that synonyms should be checked in the database.
+Your output must be a single JSON object with the following structure (and no additional text outside this JSON object):
 
-VERY IMPORTANT:
-- Only plan queries using node labels, relationships, and properties that actually exist in the database schema.
-- If the user question cannot be answered from the schema, set should_query to false.
-
-Your output must be a single JSON object with the following keys:
-- "entities": an array of entity objects that match the schema
-- "query_intent": a string describing the purpose of the query
-- "should_query": a boolean indicating if a Neo4j query is appropriate
-- "reasoning": a short explanation of your logic
-
-The structure should look like this:
 {{
   "entities": [
     {{
@@ -97,10 +87,13 @@ The structure should look like this:
   ],
   "query_intent": "string",
   "should_query": true,
-  "reasoning": "string"
+  "reasoning": "string",
+  "nodes_and_relationships": {{
+    "nodes": ["NodeLabel1", "NodeLabel2"],
+    "relationships": ["RELATIONSHIP_1", "RELATIONSHIP_2"],
+    "properties": ["PROPERTY_1", "PROPERTY_2"]
+  }}
 }}
-
-NO additional text outside this JSON object.
 
 Database Schema:
 {schema}
@@ -119,7 +112,9 @@ query_prompt = PromptTemplate.from_template("""
 You are an expert Neo4j knowledge-graph assistant. Based on the provided query plan and database schema, your job is to:
 1. Construct the necessary Cypher query (or queries) to fulfill the intent.
 2. Ensure you use only the node labels, relationships, and properties that exist in the schema.
-3. Carefully handle metabolites by also checking for synonyms, if relevant.
+3. Ensure all directions are correct.
+4. Return the most relevant and most numerous results.
+5. All results from the query should have sources. You should include the relevant sources in your query.
 
 IMPORTANT INSTRUCTIONS FOR QUERY GENERATION:
 - Double-check each label, relationship, and property against the schema. 
@@ -130,8 +125,7 @@ The final output must be ONLY the Cypher query. Do not provide explanations or t
     ```
     MATCH (m:Metabolite)
     WHERE toLower(m.name) = toLower('metabolite_name') 
-    OR EXISTS {{ MATCH (m)-[:HAS_SYNONYM]->(s:Synonym) 
-                WHERE toLower(s.synonymText) = toLower('metabolite_name') }}
+    RETURN m.name
     ```
 
 Database Schema:
@@ -145,19 +139,22 @@ Query Plan:
 # 4. SUMMARY GENERATION PROMPT
 # ------------------------------
 summary_prompt = PromptTemplate.from_template("""
-You are a detailed summarizer. Your task is to provide a thorough, single-paragraph summary that answers the user's question using the Neo4j query results. 
+You are a detailed summarizer. Provide a single-paragraph answer in a clinical context to the user's query, based on the provided query results.
+The results are your knowledge base. Pretend you just know all the information in the results, not that you are an AI assistant.
 
 GUIDELINES:
-1. Include all relevant details from the query results in your summary.
-2. Do not invent any information that is not present in the results.
-3. The summary should stand on its own—avoid phrases like "Based on the results" or "It appears that."
-4. Provide a natural, explanatory paragraph that conveys the complete answer.
-
-Query Results (list of dictionaries):
-{query_results}
+1. Include all relevant details from the query results.
+2. Do not invent any information that is not present in the query results.
+3. Present the summary so it can stand on its own: do not use phrases like "Based on the results" or "It appears that.", "Based on the data.
+4. Write in a natural, explanatory style suited for a clinical context, maintaining one cohesive paragraph.
+5. Structure the paragraph carefully, but do not break it into multiple paragraphs.
+6. The user’s question concerns HMDB data, so ensure your summary addresses this data in a clinically relevant manner.
 
 User Question:
 {question}
+
+Query Results (list of dictionaries):
+{query_results}
 """)
 
 other_prompt = PromptTemplate.from_template("""

@@ -27,8 +27,8 @@ def match_protein(protein: str):
 
 def match_disease(disease: str):
     disease_query = f"""
-        CALL db.index.fulltext.queryNodes("disease_names", "{disease}~") YIELD node, score
-        RETURN node.name AS name, score
+        CALL db.index.fulltext.queryNodes("disease_names", "{disease}") YIELD node, score
+        RETURN node.diseaseName AS disease_name, score
         LIMIT 3
     """
     disease_results = neo4j_connection.run_query(disease_query)
@@ -39,6 +39,6 @@ def match_disease(disease: str):
 
     return None
 
-# print(match_protein("Creatine kinase"))
+print(match_protein("Creatine kinase"))
 
-print(match_disease("alzheimers"))
+print(match_disease("Cancer"))

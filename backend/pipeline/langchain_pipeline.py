@@ -20,16 +20,20 @@ class EntityList(BaseModel):
     entities: List[Entity] = Field(..., description="List of extracted entities")
 
 class QueryPlan(BaseModel):
-    entities: List[Entity] = Field(..., description="List of extracted entities")
+    entities: List[Entity] = Field(..., description="List of extracted entities that match the schema")
     query_intent: str = Field(..., description="Intent of the query")
     should_query: bool = Field(..., description="Whether a database query is needed")
     reasoning: str = Field(..., description="Explanation of the decision")
+    nodes_and_relationships: Dict[str, List[str]] = Field(
+        ...,
+        description="Specifies the node labels and relationship types the query should use. 'nodes' is a list of node labels, 'relationships' is a list of relationship types, 'properties' is a list of properties"
+    )
 
 class LangChainPipeline:
     def __init__(self, neo4j_connection: Any, neo4j_schema_text: str, 
                  entity_model: str = "mistral-nemo:latest",
                  query_plan_model: str = "mistral-nemo:latest",
-                 query_model: str = "tomasonjo/llama3-text2cypher-demo",
+                 query_model: str = "mistral-nemo:latest",
                  summary_model: str = "mistral-nemo:latest",
                  other_model: str = "mistral-nemo:latest"):
         self.neo4j_connection = neo4j_connection
@@ -152,6 +156,7 @@ class LangChainPipeline:
     async def run_pipeline(self, user_question: str) -> AsyncGenerator[str, None]:
         try:
 
+            print(user_question)
             extraction_inputs = {"question": user_question, "schema": self.neo4j_schema_text}
             extraction_accumulator: List[str] = []
             async for message in self._process_stream(self.entity_chain, "Extracting entities", extraction_inputs, extraction_accumulator):
@@ -167,7 +172,7 @@ class LangChainPipeline:
                 if entity.type == "Metabolite":
                     entity.name = self.match_metabolite(entity.name)
             
-            planning_inputs = {"question": user_question, "entities": extraction_response, "schema": self.neo4j_schema_text}
+            planning_inputs = {"question": user_question, "entities": entities, "schema": self.neo4j_schema_text}
             planning_accumulator: List[str] = []
             async for message in self._process_stream(self.query_plan_chain, "Query planning", planning_inputs, planning_accumulator):
                 yield message
