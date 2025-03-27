@@ -1,6 +1,7 @@
 import json
 from typing import List, AsyncGenerator, Optional, Any, Dict
 
+
 from langchain_core.runnables import RunnableSequence, RunnablePassthrough
 from langchain_core.output_parsers import StrOutputParser, PydanticOutputParser
 from pydantic import BaseModel, Field
@@ -25,10 +26,11 @@ class QueryPlan(BaseModel):
     reasoning: str = Field(..., description="Explanation of the decision")
 
 class LangChainPipeline:
-    def __init__(self, llm_service: MultiLLMService, neo4j_connection, neo4j_schema_text: str):
+    def __init__(self, llm_service: MultiLLMService, neo4j_connection, neo4j_schema_text: str, hmdb_client=None):
         self.llm_service = llm_service
         self.neo4j_connection = neo4j_connection
         self.neo4j_schema_text = neo4j_schema_text
+        self.hmdb_client = hmdb_client
 
         self.entity_parser = PydanticOutputParser(pydantic_object=EntityList)
         self.query_plan_parser = PydanticOutputParser(pydantic_object=QueryPlan)
@@ -139,40 +141,56 @@ class LangChainPipeline:
 
     async def run_pipeline(self, user_question: str) -> AsyncGenerator[str, None]:
         try:
+            # 1) Entity Extraction
             extraction_inputs = {"question": user_question, "schema": self.neo4j_schema_text}
             extraction_accumulator: List[str] = []
             async for sse_message in self._stream_and_accumulate(self.entity_chain, "Extracting entities", extraction_inputs, extraction_accumulator):
                 yield sse_message
+
             full_extraction_response = "".join(extraction_accumulator)
-            print(full_extraction_response)
+            print(f"\n[DEBUG] Entity Extraction Response: {full_extraction_response}")
+            
             entities = self.entity_parser.parse(full_extraction_response)
+            metabolites = [ent.name for ent in entities.entities if ent.type == "Metabolite"]
 
-            metabolites = []
-            for entity in entities.entities:
-                if entity.type == "Metabolite":
-                    metabolites.append(entity.name)
-
-
-
-            planning_inputs = { "question": user_question, "entities": full_extraction_response, "schema": self.neo4j_schema_text}
+            # 2) Query Planning
+            planning_inputs = {"question": user_question, "entities": full_extraction_response, "schema": self.neo4j_schema_text}
             planning_accumulator: List[str] = []
             async for sse_message in self._stream_and_accumulate(self.query_plan_chain, "Query planning", planning_inputs, planning_accumulator):
                 yield sse_message
+
             full_query_plan_response = "".join(planning_accumulator)
+            print(f"\n[DEBUG] Query Planning Response: {full_query_plan_response}")
+
             query_plan = self.query_plan_parser.parse(full_query_plan_response)
 
-
-            query_inputs = {"query_plan": query_plan, "schema": self.neo4j_schema_text}
-            query_accumulator: List[str] = []
+            # 3) If query_plan says we should query:
             if query_plan.should_query:
+                query_inputs = {"query_plan": query_plan, "schema": self.neo4j_schema_text}
+                query_accumulator: List[str] = []
                 async for sse_message in self._stream_and_accumulate(self.query_chain, "Query execution", query_inputs, query_accumulator):
-                        yield sse_message
+                    yield sse_message
                 full_query_response = "".join(query_accumulator)
-                neo4j_results = self.neo4j_connection.run_query(full_query_response)
+                
+                print(f"\n[DEBUG] Generated Cypher Query: {full_query_response}")
+                # neo4j_results = self.neo4j_connection.run_query(full_query_response)
+                # print(f"\n[DEBUG] Neo4j query results => {neo4j_results}")
+                try:
+                    neo4j_results = self.neo4j_connection.run_query(full_query_response)
+                    print(f"\n[DEBUG] Neo4j raw query results: {neo4j_results}")
+                    
+                    # Check if the results are valid
+                    if not neo4j_results or neo4j_results == [None] or neo4j_results == [""]:
+                        print("[DEBUG] No valid results from Neo4j, initiating HMDB fallback...")
+                        neo4j_results = []
+                except Exception as e:
+                    print(f"\n[ERROR] Neo4j query execution failed: {e}")
+                    neo4j_results = []
 
 
+                # Check for synonyms as well
                 for metabolite in metabolites:
-                    neo4j_results += self.neo4j_connection.run_query(f'''
+                    more_results = self.neo4j_connection.run_query(f"""
                         MATCH (m:Metabolite)
                         WHERE toLower(m.name) = toLower('{metabolite}')
                         OR EXISTS {{
@@ -180,19 +198,339 @@ class LangChainPipeline:
                             WHERE toLower(s.synonymText) = toLower('{metabolite}')
                         }}
                         RETURN m.description
-                    ''')
+                    """)
+                    if more_results:
+                        neo4j_results += more_results
 
-                yield self._format_message("Results", f"Query results: {neo4j_results}")
+                # Validate neo4j_results properly
+                if not neo4j_results or neo4j_results == [None] or neo4j_results == [""]:
+                    print("[DEBUG] No valid results from Neo4j, initiating HMDB fallback...")
+                    if len(neo4j_results) == 0 and len(metabolites) > 0 and self.hmdb_client:
+                        first_metabolite = metabolites[0]
+                        fallback_data = None
 
-                summary_inputs = {"query_results": neo4j_results, "question": user_question}
-                summary_accumulator: List[str] = []
-                async for sse_message in self._stream_and_accumulate(self.summary_chain, "Summary", summary_inputs, summary_accumulator):
-                    yield sse_message
-                full_summary_response = "".join(summary_accumulator)
-                print(full_summary_response)
+                        # Check if it's an HMDB ID or not
+                        # Check if it's an HMDB ID or not
+                        if first_metabolite.startswith("HMDB"):
+                            print(f"\n[DEBUG] Making API call for ID '{first_metabolite}'")
+                            
+                            # Making the API call directly without caching
+                            payload = {"hmdb_id": [first_metabolite]}
+                            fallback_data = self.hmdb_client.post("metabolites", payload)
+                            
+                            if fallback_data and "found" in fallback_data:
+                                print(f"\n[DEBUG] Fallback data from API: {fallback_data}")
+                            else:
+                                print(f"\n[DEBUG] No data found for ID '{first_metabolite}' from API")
 
+                        else:  # If it's not an HMDB ID, try searching by name
+                            print(f"\n[DEBUG] Making API search call for name '{first_metabolite}'")
+                            
+                            # Making the API search call directly without caching
+                            payload = {"name": first_metabolite}
+                            fallback_data = self.hmdb_client.post("metabolites/search", payload)
+                            
+                            if fallback_data and "found" in fallback_data:
+                                print(f"\n[DEBUG] Fallback data from API (search): {fallback_data}")
+                            else:
+                                print(f"\n[DEBUG] No data found for name '{first_metabolite}' from API")
+
+
+                        # Process the fallback data if it was found
+                        if fallback_data:
+                            print(f"\n[DEBUG] Fallback data returned: {fallback_data}")
+
+                            summary_inputs = {
+                                "query_results": fallback_data,
+                                "question": user_question
+                            }
+                            summary_accumulator: List[str] = []
+                            async for sse_message in self._stream_and_accumulate(
+                                self.summary_chain,
+                                "Summary (HMDB Fallback)",
+                                summary_inputs,
+                                summary_accumulator
+                            ):
+                                yield sse_message
+                        else:
+                            yield self._format_message("Results", "No data found in DB or from HMDB API fallback.")
+
+                    # #working code .
+                    # if len(neo4j_results) == 0 and len(metabolites) > 0 and self.hmdb_client:
+                    #     first_metabolite = metabolites[0]
+                    #     fallback_data = None
+
+                    #     if first_metabolite.startswith("HMDB"):
+                    #         endpoint = f"metabolites/{first_metabolite}"
+                    #         print(f"\n[DEBUG] Making API call for ID '{first_metabolite}'")
+                    #         fallback_data = self.hmdb_client.get(endpoint)
+                    #         print(f"\n[DEBUG] API call completed with data: {fallback_data}")
+                            
+                    #     else:
+                    #         search_payload = {"name": first_metabolite}
+                    #         print(f"\n[DEBUG] Making API search call for name '{first_metabolite}'")
+                    #         search_results = self.hmdb_client.post("metabolites/search", search_payload)
+                    #         print(f"\n[DEBUG] API search results for name '{first_metabolite}': {search_results}")
+
+                    #         if search_results and "found" in search_results:
+                    #             hmdb_id = search_results["found"][0].get("hmdb_id")
+                    #             if hmdb_id:
+                    #                 endpoint = f"metabolites/{hmdb_id}"
+                    #                 fallback_data = self.hmdb_client.get(endpoint)
+                    #                 print(f"\n[DEBUG] Fetched data using name '{first_metabolite}': {fallback_data}")
+
+                    #     if fallback_data:
+                    #         yield self._format_message("Results", f"HMDB fallback results: {fallback_data}")
+#ahmed code
+                    # if len(metabolites) > 0 and self.hmdb_client:
+                    #     first_metabolite = metabolites[0]
+                    #     fallback_data = None
+
+                    #     if first_metabolite.startswith("HMDB"):
+                    #         endpoint = f"metabolites/{first_metabolite}"
+                    #         fallback_data = self.hmdb_client.get(endpoint)
+                    #         print(f"\n[DEBUG] Fetched data for ID {first_metabolite}: {fallback_data}")
+                    #     else:
+                    #         search_payload = {"name": first_metabolite}
+                    #         search_results = self.hmdb_client.post("metabolites/search", search_payload)
+                    #         print(f"\n[DEBUG] Search Results for '{first_metabolite}': {search_results}")
+
+                    #         if search_results and "found" in search_results:
+                    #             hmdb_id = search_results["found"][0].get("hmdb_id")
+                    #             if hmdb_id:
+                    #                 endpoint = f"metabolites/{hmdb_id}"
+                    #                 fallback_data = self.hmdb_client.get(endpoint)
+                    #                 print(f"\n[DEBUG] Fetched data for name '{first_metabolite}': {fallback_data}")
+
+                    #     if fallback_data:
+                    #         yield self._format_message("Results", f"HMDB fallback results: {fallback_data}")
+
+                            summary_inputs = {"query_results": fallback_data, "question": user_question}
+                            summary_accumulator: List[str] = []
+                            async for sse_message in self._stream_and_accumulate(
+                                self.summary_chain,
+                                "Summary (HMDB Fallback)",
+                                summary_inputs,
+                                summary_accumulator
+                            ):
+                                yield sse_message
+                            else:
+                                yield self._format_message("Results", "No data found in DB or from HMDB fallback.")
+
+                else:
+                    yield self._format_message("Results", f"Query results: {neo4j_results}")
+                    
+                    summary_inputs = {"query_results": neo4j_results, "question": user_question}
+                    summary_accumulator: List[str] = []
+                    async for sse_message in self._stream_and_accumulate(self.summary_chain, "Summary", summary_inputs, summary_accumulator):
+                        yield sse_message
             else:
                 yield self._format_message("Response", f"No database query needed. {query_plan.reasoning}")
 
         except Exception as e:
             yield self._format_message("Error", f"Error in pipeline: {e}")
+
+    
+    # async def run_pipeline(self, user_question: str) -> AsyncGenerator[str, None]:
+    #     try:
+    #         # 1) Entity Extraction
+    #         extraction_inputs = {"question": user_question, "schema": self.neo4j_schema_text}
+    #         extraction_accumulator: List[str] = []
+
+    #         async for sse_message in self._stream_and_accumulate(
+    #             self.entity_chain,
+    #             "Extracting entities",
+    #             extraction_inputs,
+    #             extraction_accumulator
+    #         ):
+    #             yield sse_message
+
+    #         full_extraction_response = "".join(extraction_accumulator)
+    #         print(full_extraction_response)
+
+    #         entities = self.entity_parser.parse(full_extraction_response)
+
+    #         # Gather any extracted metabolite names
+    #         metabolites = []
+    #         for entity in entities.entities:
+    #             if entity.type == "Metabolite":
+    #                 metabolites.append(entity.name)
+
+    #         # 2) Query Planning
+    #         planning_inputs = {
+    #             "question": user_question,
+    #             "entities": full_extraction_response,
+    #             "schema": self.neo4j_schema_text
+    #         }
+    #         planning_accumulator: List[str] = []
+
+    #         async for sse_message in self._stream_and_accumulate(
+    #             self.query_plan_chain,
+    #             "Query planning",
+    #             planning_inputs,
+    #             planning_accumulator
+    #         ):
+    #             yield sse_message
+
+    #         full_query_plan_response = "".join(planning_accumulator)
+    #         query_plan = self.query_plan_parser.parse(full_query_plan_response)
+
+    #         # 3) If plan indicates we should query DB, do so
+    #         query_inputs = {"query_plan": query_plan, "schema": self.neo4j_schema_text}
+    #         query_accumulator: List[str] = []
+
+    #         if query_plan.should_query:
+    #             # 3A) Execute the Cypher chain
+    #             async for sse_message in self._stream_and_accumulate(
+    #                 self.query_chain,
+    #                 "Query execution",
+    #                 query_inputs,
+    #                 query_accumulator
+    #             ):
+    #                 yield sse_message
+
+    #             full_query_response = "".join(query_accumulator)
+
+    #             # 3B) Actually run it in Neo4j
+    #             neo4j_results = self.neo4j_connection.run_query(full_query_response)
+
+    #             # 3C) Also do the local synonyms check for each metabolite
+    #             for metabolite in metabolites:
+    #                 synonym_results = self.neo4j_connection.run_query(f'''
+    #                     MATCH (m:Metabolite)
+    #                     WHERE toLower(m.name) = toLower('{metabolite}')
+    #                     OR EXISTS {{
+    #                         MATCH (m)-[:HAS_SYNONYM]->(s:Synonym)
+    #                         WHERE toLower(s.synonymText) = toLower('{metabolite}')
+    #                     }}
+    #                     RETURN m.description
+    #                 ''')
+    #                 neo4j_results += synonym_results
+
+    #             # 3D) If DB has some results, summarize them
+    #             if len(neo4j_results) > 0:
+    #                 yield self._format_message("Results", f"Query results: {neo4j_results}")
+
+    #                 summary_inputs = {"query_results": neo4j_results, "question": user_question}
+    #                 summary_accumulator: List[str] = []
+
+    #                 async for sse_message in self._stream_and_accumulate(
+    #                     self.summary_chain,
+    #                     "Summary",
+    #                     summary_inputs,
+    #                     summary_accumulator
+    #                 ):
+    #                     yield sse_message
+
+    #                 full_summary_response = "".join(summary_accumulator)
+    #                 print(full_summary_response)
+
+    #             else:
+    #                 # <-- HMDB fallback changes START
+    #                 # If the DB returned no results, we attempt the HMDB fallback
+    #                 if len(metabolites) > 0 and self.hmdb_client is not None:
+    #                     # We'll just pick the first metabolite (you could handle multiple if desired)
+    #                     hmdb_id = metabolites[0]
+
+    #                     # If the user provided "HMDB0001234" as an entity, hmdb_id is that. 
+    #                     # If the user only gave a name (e.g. "lactic acid"), you might need a name-based search. 
+    #                     # For now, assume they gave an actual HMDB ID:
+    #                     endpoint = f"metabolites/{hmdb_id}"
+    #                     fallback_data = self.hmdb_client.get(endpoint)
+
+    #                     if fallback_data:
+    #                         yield self._format_message("Results", f"HMDB fallback results: {fallback_data}")
+
+    #                         # Summarize the fallback data
+    #                         summary_inputs = {
+    #                             "query_results": fallback_data,
+    #                             "question": user_question
+    #                         }
+    #                         summary_accumulator: List[str] = []
+
+    #                         async for sse_message in self._stream_and_accumulate(
+    #                             self.summary_chain,
+    #                             "Summary (HMDB Fallback)",
+    #                             summary_inputs,
+    #                             summary_accumulator
+    #                         ):
+    #                             yield sse_message
+    #                     else:
+    #                         yield self._format_message(
+    #                             "Results",
+    #                             "No data found in DB, and HMDB fallback also returned nothing."
+    #                         )
+    #                 else:
+    #                     yield self._format_message(
+    #                         "Results",
+    #                         "No data found in DB, and no metabolite ID for HMDB fallback."
+    #                     )
+    #                 # <-- HMDB fallback changes END
+
+    #         else:
+    #             # If query_plan.should_query = false, just respond
+    #             yield self._format_message("Response", f"No database query needed. {query_plan.reasoning}")
+
+    #     except Exception as e:
+    #         yield self._format_message("Error", f"Error in pipeline: {e}")
+
+
+    # async def run_pipeline(self, user_question: str) -> AsyncGenerator[str, None]:
+    #     try:
+    #         extraction_inputs = {"question": user_question, "schema": self.neo4j_schema_text}
+    #         extraction_accumulator: List[str] = []
+    #         async for sse_message in self._stream_and_accumulate(self.entity_chain, "Extracting entities", extraction_inputs, extraction_accumulator):
+    #             yield sse_message
+    #         full_extraction_response = "".join(extraction_accumulator)
+    #         print(full_extraction_response)
+    #         entities = self.entity_parser.parse(full_extraction_response)
+
+    #         metabolites = []
+    #         for entity in entities.entities:
+    #             if entity.type == "Metabolite":
+    #                 metabolites.append(entity.name)
+
+
+
+    #         planning_inputs = { "question": user_question, "entities": full_extraction_response, "schema": self.neo4j_schema_text}
+    #         planning_accumulator: List[str] = []
+    #         async for sse_message in self._stream_and_accumulate(self.query_plan_chain, "Query planning", planning_inputs, planning_accumulator):
+    #             yield sse_message
+    #         full_query_plan_response = "".join(planning_accumulator)
+    #         query_plan = self.query_plan_parser.parse(full_query_plan_response)
+
+
+    #         query_inputs = {"query_plan": query_plan, "schema": self.neo4j_schema_text}
+    #         query_accumulator: List[str] = []
+    #         if query_plan.should_query:
+    #             async for sse_message in self._stream_and_accumulate(self.query_chain, "Query execution", query_inputs, query_accumulator):
+    #                     yield sse_message
+    #             full_query_response = "".join(query_accumulator)
+    #             neo4j_results = self.neo4j_connection.run_query(full_query_response)
+
+
+    #             for metabolite in metabolites:
+    #                 neo4j_results += self.neo4j_connection.run_query(f'''
+    #                     MATCH (m:Metabolite)
+    #                     WHERE toLower(m.name) = toLower('{metabolite}')
+    #                     OR EXISTS {{
+    #                         MATCH (m)-[:HAS_SYNONYM]->(s:Synonym)
+    #                         WHERE toLower(s.synonymText) = toLower('{metabolite}')
+    #                     }}
+    #                     RETURN m.description
+    #                 ''')
+
+    #             yield self._format_message("Results", f"Query results: {neo4j_results}")
+
+    #             summary_inputs = {"query_results": neo4j_results, "question": user_question}
+    #             summary_accumulator: List[str] = []
+    #             async for sse_message in self._stream_and_accumulate(self.summary_chain, "Summary", summary_inputs, summary_accumulator):
+    #                 yield sse_message
+    #             full_summary_response = "".join(summary_accumulator)
+    #             print(full_summary_response)
+
+    #         else:
+    #             yield self._format_message("Response", f"No database query needed. {query_plan.reasoning}")
+
+    #     except Exception as e:
+    #         yield self._format_message("Error", f"Error in pipeline: {e}")

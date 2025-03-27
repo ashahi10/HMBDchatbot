@@ -11,6 +11,8 @@ from utils.schema_generator import generate_text_schema
 from services.llm_service import MultiLLMService, LLMProvider
 from pipeline.langchain_pipeline import LangChainPipeline
 from api.query_controller import router as query_router
+from pipeline.hmdb_api import HMDBApiClient, RateLimiter
+
 
 import time
 
@@ -19,10 +21,21 @@ load_dotenv()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     start = time.time()
+
+    # 1) Create rate limiter
+    rate_limiter = RateLimiter()
+    
+    # 2) Create HMDB Client
+    hmdb_client = HMDBApiClient(rate_limiter=rate_limiter)
+    
+    # 3) Store in app.state
+    app.state.hmdb_client = hmdb_client
+
+
     # load env variables, changing .env file will allow swapping bw kgs
     neo4j_uri = os.getenv("NEO4J_URI")
     print(neo4j_uri)
-    neo4j_user = os.getenv("NEO4J_USER")
+    neo4j_user = os.getenv("NEO4J_USERNAME")
     neo4j_password = os.getenv("NEO4J_PASSWORD")
 
     # groq_api_key = os.getenv("GROQ_API_KEY")
@@ -56,7 +69,8 @@ async def lifespan(app: FastAPI):
         }
     }
 
-    provider = "ollama"
+    # provider = "ollama"
+    provider = "groq"
 
     # create llm service - local or remote (ollama or groq)
     llm_service = MultiLLMService(**configs[provider])
@@ -69,7 +83,8 @@ async def lifespan(app: FastAPI):
     query_pipeline = LangChainPipeline(
         llm_service=llm_service,
         neo4j_connection=neo4j_connection,
-        neo4j_schema_text=neo4j_schema_text
+        neo4j_schema_text=neo4j_schema_text,
+        hmdb_client=hmdb_client
     )
     
     # store these in app state to use in routers
