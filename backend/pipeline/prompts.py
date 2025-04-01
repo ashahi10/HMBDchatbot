@@ -85,9 +85,9 @@ query_plan_prompt = PromptTemplate.from_template("""
         """)
 
 query_prompt = PromptTemplate.from_template("""
-    You are an expert knowledge graph assistant with access to a Neo4j database.
+    You are an expert knowledge graph assistant with with comprehensive domain knowledge in metabolomics, including chemical structures, biospecimen data, spectral profiles, literature citations, and functional ontology. You have direct access to Neo4j database.
     
-    Given the following query plan and database schema, create and execute Cypher queries to retrieve the answer from the graph database.
+    Given the following query plan and database schema, create and execute one or more efficient Cypher queries to accurately retrieve only the information necessary to answer the user's question, while ensuring optimal performance on a large graph.
     
     Database Schema:
     {schema}
@@ -102,7 +102,22 @@ query_prompt = PromptTemplate.from_template("""
     4. If the query plan mentions concepts not in the schema, map them to the closest available elements.
     5. Before executing your query, double-check it against the schema provided.
     6. Query must end with a RETURN statement.
-    
+    7. Analyze the Query Plan to determine the user intent. This could be one or a combination of:
+        - **Chemical Structure Details:** Retrieve properties such as `m.chemical_formula`, `cf.SMILES`, `cf.InChI`, and synonyms.
+        - **Biospecimen Data:** Focus on nodes and properties detailing specimen types, concentration values, and associated publications.
+        - **Spectral Data:** Limit to relevant spectrum types (e.g., LC-MS/MS, NMR) and instrument details.
+        - **Publications & Citations:** Retrieve study identifiers (e.g., PubMed IDs, DOIs) and citation details.
+        - **Ontology & Functional Relationships:** Retrieve pathway names or functional classifications.
+        - **Additional Context:** If multiple aspects are requested, structure separate queries to fetch each domains relevant fields.
+    8. Do not include properties or relationships unless the query plan explicitly references them, or they directly map to a user-requested concept.
+    - For example, if the user asks for the 'molecular formula', only return the `chemical_formula` or its synonyms from the Metabolite node.
+    - Do NOT include unrelated data such as spectra, biospecimen concentrations, or publications unless directly relevant to the query intent.                                          
+    9. For queries targeting pathways, ensure to include the pathway name in the results.
+    10. Dynamically limit the query to only the necessary relationships based on the user intent. For example, if the intent is to fetch chemical structure details, do not include OPTIONAL MATCH clauses for biospecimen or spectral data unless explicitly required by the query plan.
+    11.If the query plan indicates that additional external data (e.g., from the HMDB API) might be necessary as a fallback, structure the query to be minimal and efficient for the Neo4j part, returning a primary set of results that can be augmented by external data if needed.                                                                                                                
+    12.Do not include more than 4 OPTIONAL MATCH clauses unless the query intent demands retrieving multiple domains of data. Otherwise, prioritize precision and performance.
+    13.Entities with confidence > 0.9 should be prioritized in query construction.Ignore entities < 0.5 unless explicitly mentioned in the question.
+    14.When the user asks for a specific property (e.g., 'molecular formula', 'InChIKey', 'SMILES'), translate this to the corresponding schema field (e.g., 'chemical_formula') and ONLY include it in the RETURN clause.                                                                                
     SPECIAL HANDLING FOR METABOLITES:
     When querying for Metabolites, ALWAYS check both the metabolite name AND any synonyms using this pattern:
     ```

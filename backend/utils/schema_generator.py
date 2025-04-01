@@ -18,16 +18,30 @@ def infer_property_type(value: Any) -> str:
         return "NULL"
     else:
         return type(value).__name__.upper()
-
+    
+    
 def get_node_properties(neo4j_conn: Neo4jConnection, label: str) -> Dict[str, str]:
     query = f"""
     MATCH (n:`{label}`)
-    UNWIND keys(n) AS key
-    WITH key, head(collect(n[key])) AS sample_value
-    RETURN DISTINCT key, sample_value
+    RETURN keys(n)[..5] AS sample_keys
+    LIMIT 1
     """
-    results = neo4j_conn.run_query(query)
-    return {r["key"]: infer_property_type(r["sample_value"]) for r in results}
+    result = neo4j_conn.run_query(query)
+    if not result:
+        return {}
+    
+    sample_keys = result[0].get("sample_keys", [])
+    return {key: "UNKNOWN" for key in sample_keys}
+
+# def get_node_properties(neo4j_conn: Neo4jConnection, label: str) -> Dict[str, str]:
+#     query = f"""
+#     MATCH (n:`{label}`)
+#     UNWIND keys(n) AS key
+#     WITH key, head(collect(n[key])) AS sample_value
+#     RETURN DISTINCT key, sample_value
+#     """
+#     results = neo4j_conn.run_query(query)
+#     return {r["key"]: infer_property_type(r["sample_value"]) for r in results}
 
 def get_relationship_properties(neo4j_conn: Neo4jConnection, rel_type: str) -> Dict[str, str]:
     query = f"""
