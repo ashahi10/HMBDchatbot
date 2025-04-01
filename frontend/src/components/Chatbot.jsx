@@ -1,4 +1,9 @@
 import { useState, useRef, useEffect } from 'react';
+import remarkGfm from 'remark-gfm';
+import remarkMath from 'remark-math';
+import rehypeKatex from 'rehype-katex';
+import 'katex/dist/katex.min.css';
+
 import {
   Box,
   Paper,
@@ -94,7 +99,7 @@ function ChatMessages({ messages, loading }) {
       }
 
       // If it's a Summary, append to summaryText; otherwise, it's "reasoning"
-      if (msg.section === 'Summary') {
+      if (msg.section === 'Summary' || msg.section === 'Answer') {
         currentChunk.summaryText += msg.text;
       } else {
         // Example: "Query execution" -> ```cypher\n...\n```, else ```json\n...\n```
@@ -201,11 +206,23 @@ function ChatMessages({ messages, loading }) {
                   <Typography variant="subtitle1" fontWeight={500} gutterBottom>
                     Answer
                   </Typography>
-                  <Typography variant="body1">
-                    {chunk.summaryText}
-                  </Typography>
+                  <Box className="markdown-body">
+                    <ReactMarkdown
+                      remarkPlugins={[remarkGfm, remarkMath]}
+                      rehypePlugins={[rehypeKatex]}
+                      components={{
+                        code: CodeBlock,
+                        a: ({ node, ...props }) => (
+                          <a {...props} target="_blank" rel="noopener noreferrer" />
+                        )
+                      }}
+                    >
+                      {chunk.summaryText}
+                    </ReactMarkdown>
+                  </Box>
                 </>
               )}
+
 
               {/* If there's no nonSummary and no summary, that means assistant gave no response yet */}
               {!hasNonSummary && !hasSummary && loading && (
@@ -278,16 +295,47 @@ function Chatbot() {
   }
 
   return (
-    <Box sx={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
-      {/* Pass messages and loading state to ChatMessages */}
-      <ChatMessages messages={messages} loading={loading} />
-      <ChatInput
-        newMessage={newMessage}
-        isLoading={loading}
-        setNewMessage={setNewMessage}
-        submitNewMessage={submitNewMessage}
-      />
-    </Box>
+    <>
+      <Box sx={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
+        {/* Pass messages and loading state to ChatMessages */}
+        <ChatMessages messages={messages} loading={loading} />
+        <ChatInput
+          newMessage={newMessage}
+          isLoading={loading}
+          setNewMessage={setNewMessage}
+          submitNewMessage={submitNewMessage}
+        />
+      </Box>
+      <style>{`
+        .markdown-body {
+          line-height: 1.7;
+          font-size: 16px;
+        }
+
+        .markdown-body p {
+          margin-bottom: 12px;
+        }
+
+        .markdown-body ul {
+          padding-left: 20px;
+          margin-bottom: 12px;
+        }
+
+        .markdown-body code {
+          background-color:rgb(0, 0, 0);
+          padding: 2px 4px;
+          border-radius: 4px;
+          font-family: monospace;
+        }
+
+        .markdown-body pre {
+          background-color: #1e1e1e;
+          padding: 12px;
+          border-radius: 8px;
+          overflow-x: auto;
+        }
+      `}</style>
+    </>
   );
 }
 

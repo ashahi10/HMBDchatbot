@@ -7,7 +7,7 @@ from langchain_core.output_parsers import StrOutputParser, PydanticOutputParser
 from pydantic import BaseModel, Field
 
 from services.llm_service import MultiLLMService
-from pipeline.prompts import entity_prompt, query_plan_prompt, query_prompt, summary_prompt
+from pipeline.prompts import entity_prompt, query_plan_prompt, query_prompt, summary_prompt, api_reasoning_prompt
 
 BAD_RESPONSES = ["```", "json", "```json", "```cypher", "```cypher\n", "```", "cy", "pher"]
 
@@ -60,6 +60,13 @@ class LangChainPipeline:
             {"query_results": lambda x: x["query_results"], "question": lambda x: x["question"]}, 
             summary_prompt, 
             streaming=True, 
+            parser=None,
+            model_type="summary"
+        )
+        self.api_reasoning_chain = self._create_chain(
+            {"api_data": lambda x: x["api_data"], "question": lambda x: x["question"]},
+            api_reasoning_prompt,
+            streaming=True,
             parser=None,
             model_type="summary"
         )
@@ -210,15 +217,26 @@ class LangChainPipeline:
                             filtered_fallback_data = self._filter_hmdb_response(fallback_data)
                             print(f"\n[DEBUG] Filtered HMDB fallback data: {filtered_fallback_data}")
 
-                            summary_inputs = {
-                                "query_results": [filtered_fallback_data],
+                            # summary_inputs = {
+                            #     "query_results": [filtered_fallback_data],
+                            #     "question": user_question
+                            # }
+                            # summary_accumulator: List[str] = []
+                            # async for sse_message in self._stream_and_accumulate(
+                            #     self.summary_chain,
+                            #     "Summary (HMDB Fallback)",
+                            #     summary_inputs,
+                            #     summary_accumulator
+                            # ):
+                            api_reasoning_inputs = {
+                                "api_data": filtered_fallback_data,
                                 "question": user_question
                             }
                             summary_accumulator: List[str] = []
                             async for sse_message in self._stream_and_accumulate(
-                                self.summary_chain,
-                                "Summary (HMDB Fallback)",
-                                summary_inputs,
+                                self.api_reasoning_chain,
+                                "Answer",
+                                api_reasoning_inputs,
                                 summary_accumulator
                             ):
                                 yield sse_message
@@ -239,76 +257,108 @@ class LangChainPipeline:
             yield self._format_message("Error", f"Error in pipeline: {e}")
 
     def _filter_hmdb_response(self, hmdb_data: dict) -> dict:
-        """Dynamically filters HMDB API response, including all fields with limited data."""
+        """Preserves full HMDB API response and chunks structured data for LLM use."""
         if not isinstance(hmdb_data, dict) or "found" not in hmdb_data or not hmdb_data["found"]:
             return {"error": "No valid data found in HMDB response"}
 
-        metabolites = hmdb_data["found"][:3]
-        filtered_metabolites = []
+        # ✅ Store full API response internally
+        self.last_hmdb_api_result = hmdb_data  # For internal LLM access or chaining
+        with open("latest_hmdb_api_full.json", "w") as f:
+            json.dump(hmdb_data, f, indent=2)
+
+        # ✅ Instead of truncation, chunk by tag/key for LLM compatibility
+        MAX_METABOLITES = 10
+        metabolites = hmdb_data["found"][:MAX_METABOLITES]
+        chunked_metabolites = []
 
         for metabolite in metabolites:
-            if not isinstance(metabolite, dict):
-                continue
-            filtered_data = {}
-            
+            chunked = {}
             for key, value in metabolite.items():
-                if value is None:
-                    filtered_data[key] = ""
-                elif isinstance(value, str):
-                    filtered_data[key] = self._truncate_text(value, max_sentences=3)
+                if isinstance(value, dict):
+                    chunked[key] = self._chunk_nested_dict(value)
                 elif isinstance(value, list):
-                    filtered_data[key] = self._limit_list(value, limit=3)
-                elif isinstance(value, dict):
-                    filtered_data[key] = self._filter_nested_dict(value, limit=3)
+                    chunked[key] = self._chunk_list(value)
+                elif isinstance(value, str):
+                    chunked[key] = self._chunk_text(value)
                 else:
-                    filtered_data[key] = value
-            
-            filtered_metabolites.append(filtered_data)
+                    chunked[key] = value
+            chunked_metabolites.append(chunked)
 
-        return {"metabolites": filtered_metabolites}
+        return {"metabolites": chunked_metabolites}
 
-    def _truncate_text(self, text: str, max_sentences: int = 3) -> str:
-        """Truncates text to the first max_sentences sentences."""
-        if not text:
-            return ""
+
+    # def _truncate_text(self, text: str, max_sentences: int = 3) -> str:
+    #     """Truncates text to the first max_sentences sentences."""
+    #     if not text:
+    #         return ""
+    #     sentences = text.split(". ")
+    #     truncated = ". ".join(sentences[:max_sentences])
+    #     return truncated + ("." if len(sentences) > max_sentences and truncated else "")
+
+    # def _limit_list(self, lst: list, limit: int = 3) -> list:
+    #     """Limits a list to 'limit' items, handling nested structures."""
+    #     if not lst:
+    #         return []
+    #     limited = lst[:limit]
+    #     processed = []
+        
+    #     for item in limited:
+    #         if isinstance(item, dict):
+    #             processed.append(self._filter_nested_dict(item, limit=3))
+    #         elif isinstance(item, str):
+    #             processed.append(item)
+    #         else:
+    #             processed.append(item)
+        
+    #     if len(lst) > limit:
+    #         processed.append(f"...and {len(lst) - limit} more")
+    #     return processed
+
+    # def _filter_nested_dict(self, d: dict, limit: int = 3) -> dict:
+    #     """Recursively filters a nested dictionary, limiting lists within it."""
+    #     filtered = {}
+    #     for key, value in d.items():
+    #         if value is None:
+    #             filtered[key] = ""
+    #         elif isinstance(value, str):
+    #             filtered[key] = self._truncate_text(value, max_sentences=3)
+    #         elif isinstance(value, list):
+    #             filtered[key] = self._limit_list(value, limit=limit)
+    #         elif isinstance(value, dict):
+    #             filtered[key] = self._filter_nested_dict(value, limit=limit)
+    #         else:
+    #             filtered[key] = value
+    #     return filtered
+
+
+    def _chunk_text(self, text: str, max_tokens: int = 150) -> list:
+        """Chunks long text into readable parts for LLM input."""
         sentences = text.split(". ")
-        truncated = ". ".join(sentences[:max_sentences])
-        return truncated + ("." if len(sentences) > max_sentences and truncated else "")
+        chunks = []
+        current = []
+        count = 0
 
-    def _limit_list(self, lst: list, limit: int = 3) -> list:
-        """Limits a list to 'limit' items, handling nested structures."""
-        if not lst:
-            return []
-        limited = lst[:limit]
-        processed = []
-        
-        for item in limited:
-            if isinstance(item, dict):
-                processed.append(self._filter_nested_dict(item, limit=3))
-            elif isinstance(item, str):
-                processed.append(item)
-            else:
-                processed.append(item)
-        
-        if len(lst) > limit:
-            processed.append(f"...and {len(lst) - limit} more")
-        return processed
+        for s in sentences:
+            current.append(s)
+            count += len(s.split())
+            if count >= max_tokens:
+                chunks.append(". ".join(current))
+                current = []
+                count = 0
 
-    def _filter_nested_dict(self, d: dict, limit: int = 3) -> dict:
-        """Recursively filters a nested dictionary, limiting lists within it."""
-        filtered = {}
-        for key, value in d.items():
-            if value is None:
-                filtered[key] = ""
-            elif isinstance(value, str):
-                filtered[key] = self._truncate_text(value, max_sentences=3)
-            elif isinstance(value, list):
-                filtered[key] = self._limit_list(value, limit=limit)
-            elif isinstance(value, dict):
-                filtered[key] = self._filter_nested_dict(value, limit=limit)
-            else:
-                filtered[key] = value
-        return filtered
+        if current:
+            chunks.append(". ".join(current))
 
+        return chunks
 
-    
+    def _chunk_list(self, lst: list, max_items_per_chunk: int = 5) -> list:
+        """Breaks long lists into manageable LLM-readable chunks."""
+        chunks = []
+        for i in range(0, len(lst), max_items_per_chunk):
+            chunk = lst[i:i + max_items_per_chunk]
+            chunks.append(chunk)
+        return chunks
+
+    def _chunk_nested_dict(self, d: dict) -> list:
+        """Converts nested dict into a list of labeled key-value chunks."""
+        return [f"{k}: {v}" for k, v in d.items()]
