@@ -193,7 +193,7 @@ api_reasoning_prompt = PromptTemplate.from_template("""
 
     6. **Address Data Gaps:** If the API data lacks sufficient information to fully answer the question, use what is available and internal knowldege to answer question best with provided data combined.
 
-    7. **Incorporate Supporting Details:** Include references, citations, or additional context from the API data (e.g., PubMed IDs, study details) if they enhance the answer credibility or depth.
+    7. **Incorporate Supporting Details:** Include references, citations, or additional context from the API data (e.g., PubMed IDs, study details) if they enhance the answer credibility or depth.SHOW ANY EXTERNAL LINK IF PROVIDED from the api data if exist .
 
     8. **Maintain Accuracy:** Base your answer on the API data. Do not invent, assume, or hallucinate information beyond what is provided.Use internal knowldege to strenghten the answer if needed and provide additional context or explanations.
          - For numerical data (e.g., concentrations), include units and ensure consistency.
