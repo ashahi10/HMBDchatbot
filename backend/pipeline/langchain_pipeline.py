@@ -1,5 +1,6 @@
 import json
 from typing import List, AsyncGenerator, Optional, Any, Dict
+import re
 
 
 from langchain_core.runnables import RunnableSequence, RunnablePassthrough
@@ -161,10 +162,141 @@ class LangChainPipeline:
             f"{api_summary.strip()}"
         )
 
-    async def run_pipeline(self, user_question: str) -> AsyncGenerator[str, None]:
+    async def run_pipeline(self, user_question: str, conversation_history: List = None, relevant_history: List = None) -> AsyncGenerator[str, None]:
         try:
+            # Enhanced context generation to properly handle entity continuity
+            context_info = ""
+            entity_context = {}
+            current_entities = set()
+            
+            # Extract potential entities from current question for matching
+            # Simple regex-based extraction of potential entity references
+            entity_patterns = [
+                (r'\b[A-Z][a-z]+(?:\s+[a-z]+)*\b', 'Named Entity'),  # Capitalized names like "Citric Acid"
+                (r'\b[A-Z][a-z]?[0-9]*(?:[A-Z][a-z]?[0-9]*)*\b', 'Chemical Formula'),  # Chemical formulas like C6H12O6
+                (r'\bHMDB\d+\b', 'HMDB ID'),  # HMDB IDs
+                (r'\b[A-Z]{14}-[A-Z]{10}-[A-Z]\b', 'InChIKey')  # InChIKeys
+            ]
+            
+            for pattern, entity_type in entity_patterns:
+                matches = re.findall(pattern, user_question)
+                for match in matches:
+                    if len(match) > 2:  # Avoid single letters
+                        current_entities.add(match.lower())
+            
+            # Check for relevant context from conversation history
+            if relevant_history and len(relevant_history) > 0:
+                # First, identify the most relevant turns that match the current entities
+                matching_entity_turns = []
+                non_matching_turns = []
+                
+                for turn in relevant_history:
+                    # Extract entities from the memory turn
+                    turn_entities = set()
+                    if turn.get("entity"):
+                        turn_entities.add(turn.get("entity").lower())
+                    
+                    # Check for entity overlap
+                    if current_entities and turn_entities:
+                        # Check if any current entity matches any turn entity
+                        if any(current_entity in turn_entity or turn_entity in current_entity 
+                               for current_entity in current_entities for turn_entity in turn_entities):
+                            matching_entity_turns.append(turn)
+                        else:
+                            # Store for potential use if no matching turns are found
+                            non_matching_turns.append(turn)
+                    else:
+                        non_matching_turns.append(turn)
+                
+                # Prioritize turns with matching entities
+                prioritized_turns = matching_entity_turns + non_matching_turns
+                
+                # Format context information from up to 3 most relevant turns
+                context_parts = []
+                used_turns = 0
+                
+                for turn in prioritized_turns:
+                    # Always include matching entity turns
+                    if turn in matching_entity_turns or used_turns < 2:
+                        if turn.get("user_query") and turn.get("answer"):
+                            # Check for entity overlap to mark especially relevant information
+                            is_entity_match = turn in matching_entity_turns
+                            
+                            # Format with entity relevance marker if applicable
+                            prefix = "Previous (Entity Match): " if is_entity_match else "Previous: "
+                            
+                            context_parts.append(
+                                f"{prefix}Q: {turn['user_query']}\n"
+                                f"{prefix}A: {turn['answer']}"
+                            )
+                            
+                            used_turns += 1
+                            
+                            # Stop after 2 turns or 3 matching entity turns
+                            if (is_entity_match and used_turns >= 3) or used_turns >= 2:
+                                break
+                
+                if context_parts:
+                    context_info = "Related information from previous conversation:\n" + "\n\n".join(context_parts)
+                    
+                    # Also extract entity context for clarification (e.g., to resolve ambiguity)
+                    for turn in prioritized_turns[:2]:  # Use only top 2 turns for entity context
+                        if turn.get("entity") and turn.get("answer"):
+                            entity = turn.get("entity")
+                            if entity not in entity_context:
+                                # Extract a short description from the answer
+                                answer = turn.get("answer")
+                                description = answer[:200] + "..." if len(answer) > 200 else answer
+                                entity_context[entity] = description
+            
+            # Add recent turns for conversational continuity context
+            recent_context = ""
+            if conversation_history and len(conversation_history) > 0:
+                # Extract most recent turns for continuity
+                recent_parts = []
+                for idx, turn in enumerate(conversation_history[-3:]):  # Use up to 3 most recent turns
+                    if turn.get("user_query") and turn.get("answer"):
+                        recent_parts.append(
+                            f"User: {turn['user_query']}\n"
+                            f"Assistant: {turn['answer']}"
+                        )
+                
+                if recent_parts:
+                    recent_context = "Recent conversation:\n" + "\n\n".join(recent_parts)
+            
+            # Add entity clarification context if available and current question seems ambiguous
+            entity_clarification = ""
+            ambiguity_terms = ["it", "this", "that", "the", "compound", "molecule", "substance", "above"]
+            has_ambiguity = any(term in user_question.lower().split() for term in ambiguity_terms)
+            
+            if entity_context and has_ambiguity:
+                clarification_parts = []
+                for entity, description in entity_context.items():
+                    # Extract a shorter description suitable for clarification
+                    first_sentence = description.split(".")[0] + "." if "." in description else description
+                    clarification_parts.append(f"Entity '{entity}': {first_sentence}")
+                
+                if clarification_parts:
+                    entity_clarification = "Note - Previous entities mentioned:\n" + "\n".join(clarification_parts)
+            
+            # Combine question with context
+            augmented_question = user_question
+            extra_contexts = []
+            
+            if recent_context:
+                extra_contexts.append(recent_context)
+            
+            if context_info:
+                extra_contexts.append(context_info)
+                
+            if entity_clarification:
+                extra_contexts.append(entity_clarification)
+                
+            if extra_contexts:
+                augmented_question = f"{user_question}\n\n" + "\n\n".join(extra_contexts)
+            
             # 1) Entity Extraction
-            extraction_inputs = {"question": user_question, "schema": self.neo4j_schema_text}
+            extraction_inputs = {"question": augmented_question, "schema": self.neo4j_schema_text}
             extraction_accumulator: List[str] = []
             async for sse_message in self._stream_and_accumulate(self.entity_chain, "Extracting entities", extraction_inputs, extraction_accumulator):
                 yield sse_message
@@ -181,7 +313,7 @@ class LangChainPipeline:
             else:
                 payload = {}
             # 2) Query Planning
-            planning_inputs = {"question": user_question, "entities": full_extraction_response, "schema": self.neo4j_schema_text}
+            planning_inputs = {"question": augmented_question, "entities": full_extraction_response, "schema": self.neo4j_schema_text}
             planning_accumulator: List[str] = []
             async for sse_message in self._stream_and_accumulate(self.query_plan_chain, "Query planning", planning_inputs, planning_accumulator):
                 yield sse_message

@@ -68,20 +68,79 @@ export async function* parseSSEStream(stream) {
 }
 
 export default {
-  createChat: async () => ({ id: 'default-chat' }),
+  createChat: async () => {
+    try {
+      const response = await fetch(`${API_URL}/session`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      });
+      
+      if (!response.ok) {
+        throw new Error(`API error: ${response.status}`);
+      }
+      
+      const data = await response.json();
+      return { id: data.session_id };
+    } catch (error) {
+      console.error('Error creating chat session:', error);
+      // Fallback to default ID if API fails
+      return { id: 'default-chat' };
+    }
+  },
 
   // sendChatMessage now automatically processes the SSE stream.
   sendChatMessage: async function* (chatId, message) {
     const response = await fetch(`${API_URL}/query`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ question: message }),
+      body: JSON.stringify({ 
+        question: message,
+        session_id: chatId 
+      }),
     });
+    
     if (!response.ok) {
       throw new Error(`API error: ${response.status}`);
     }
+    
+    // Check if a new session ID was assigned
+    const newSessionId = response.headers.get('X-Session-ID');
+    if (newSessionId && newSessionId !== chatId) {
+      // Return session ID update as first event
+      yield { 
+        section: "SessionUpdate",
+        sessionId: newSessionId
+      };
+    }
+    
     yield* parseSSEStream(response.body);
   },
 
-  getChatHistory: async () => []
+  getChatHistory: async (chatId) => {
+    try {
+      if (!chatId || chatId === 'default-chat') {
+        return [];
+      }
+      
+      const response = await fetch(`${API_URL}/memory/${chatId}`, {
+        method: 'GET',
+        headers: { 'Content-Type': 'application/json' },
+      });
+      
+      if (!response.ok) {
+        throw new Error(`API error: ${response.status}`);
+      }
+      
+      const data = await response.json();
+      
+      // Transform memory format to chat format
+      return data.turns.map(turn => ([
+        { role: 'user', content: turn.user_query },
+        { role: 'assistant', section: 'Answer', text: turn.answer }
+      ])).flat();
+    } catch (error) {
+      console.error('Error fetching chat history:', error);
+      return [];
+    }
+  }
 };

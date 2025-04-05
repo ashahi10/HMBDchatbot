@@ -249,17 +249,61 @@ function Chatbot() {
   const [messages, setMessages] = useState([]);
   const [newMessage, setNewMessage] = useState('');
   const [loading, setLoading] = useState(false);
+  const [sessionId, setSessionId] = useState(null);
+  const [loadingHistory, setLoadingHistory] = useState(false);
+
+  // Initialize chat session and load history when component mounts
+  useEffect(() => {
+    async function initializeChat() {
+      try {
+        // Try to load session ID from localStorage
+        const savedSessionId = localStorage.getItem('chatSessionId');
+        
+        if (savedSessionId) {
+          setSessionId(savedSessionId);
+          
+          // Load chat history for existing session
+          setLoadingHistory(true);
+          const history = await api.getChatHistory(savedSessionId);
+          if (history && history.length > 0) {
+            setMessages(history);
+          }
+          setLoadingHistory(false);
+        } else {
+          // Create new session if none exists
+          const { id } = await api.createChat();
+          setSessionId(id);
+          localStorage.setItem('chatSessionId', id);
+        }
+      } catch (error) {
+        console.error('Error initializing chat:', error);
+        // Fallback to create a new session
+        const { id } = await api.createChat();
+        setSessionId(id);
+        localStorage.setItem('chatSessionId', id);
+      }
+    }
+    
+    initializeChat();
+  }, []);
 
   async function submitNewMessage() {
     const trimmedMessage = newMessage.trim();
-    if (!trimmedMessage || loading) return;
+    if (!trimmedMessage || loading || !sessionId) return;
 
     setMessages((prev) => [...prev, { role: 'user', content: trimmedMessage }]);
     setNewMessage('');
     setLoading(true);
 
     try {
-      for await (const event of api.sendChatMessage('default-chat', trimmedMessage)) {
+      for await (const event of api.sendChatMessage(sessionId, trimmedMessage)) {
+        // Check for session updates
+        if (event.section === 'SessionUpdate' && event.sessionId) {
+          setSessionId(event.sessionId);
+          localStorage.setItem('chatSessionId', event.sessionId);
+          continue;
+        }
+        
         if (event.text === 'DONE') continue;
 
         setMessages((prev) => {
@@ -295,47 +339,53 @@ function Chatbot() {
   }
 
   return (
-    <>
-      <Box sx={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
-        {/* Pass messages and loading state to ChatMessages */}
-        <ChatMessages messages={messages} loading={loading} />
-        <ChatInput
-          newMessage={newMessage}
-          isLoading={loading}
-          setNewMessage={setNewMessage}
-          submitNewMessage={submitNewMessage}
-        />
+    <Box
+      sx={{
+        display: 'flex',
+        flexDirection: 'column',
+        height: '100vh',
+        maxHeight: '100vh',
+        overflow: 'hidden',
+        bgcolor: 'background.default'
+      }}
+    >
+      <Box sx={{ p: 2, borderBottom: 1, borderColor: 'divider' }}>
+        <Typography variant="h6" component="h1">
+          Metabolites Knowledge Assistant
+        </Typography>
       </Box>
-      <style>{`
-        .markdown-body {
-          line-height: 1.7;
-          font-size: 16px;
-        }
 
-        .markdown-body p {
-          margin-bottom: 12px;
-        }
+      {loadingHistory ? (
+        <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', flexGrow: 1 }}>
+          <CircularProgress size={40} />
+          <Typography variant="body2" sx={{ ml: 2 }}>
+            Loading conversation history...
+          </Typography>
+        </Box>
+      ) : (
+        <>
+          <Box
+            sx={{
+              flexGrow: 1,
+              p: 2,
+              overflowY: 'auto',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 2
+            }}
+          >
+            <ChatMessages messages={messages} loading={loading} />
+          </Box>
 
-        .markdown-body ul {
-          padding-left: 20px;
-          margin-bottom: 12px;
-        }
-
-        .markdown-body code {
-          background-color:rgb(0, 0, 0);
-          padding: 2px 4px;
-          border-radius: 4px;
-          font-family: monospace;
-        }
-
-        .markdown-body pre {
-          background-color: #1e1e1e;
-          padding: 12px;
-          border-radius: 8px;
-          overflow-x: auto;
-        }
-      `}</style>
-    </>
+          <ChatInput
+            newMessage={newMessage}
+            setNewMessage={setNewMessage}
+            submitNewMessage={submitNewMessage}
+            isLoading={loading}
+          />
+        </>
+      )}
+    </Box>
   );
 }
 

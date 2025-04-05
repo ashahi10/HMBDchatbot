@@ -14,6 +14,7 @@ from backend.utils.neo4j_connection import Neo4jConnection
 from backend.utils.schema_generator import generate_text_schema, get_or_cache_schema
 from backend.utils.cache_manager import CacheManager
 from backend.services.llm_service import MultiLLMService, LLMProvider
+from backend.services.memory_service import MemoryService
 from backend.pipeline.langchain_pipeline import LangChainPipeline
 from backend.api.query_controller import router as query_router
 from backend.pipeline.hmdb_api import HMDBApiClient, RateLimiter
@@ -21,6 +22,9 @@ from backend.pipeline.hmdb_api import HMDBApiClient, RateLimiter
 import time
 
 load_dotenv()
+
+# Memory debug mode - set to "true" to enable memory relevance debugging
+os.environ["DEBUG_MEMORY_RANKING"] = os.getenv("DEBUG_MEMORY_RANKING", "true")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -34,6 +38,9 @@ async def lifespan(app: FastAPI):
     #     query_cache_ttl=3600,     # 1 hour
     #     api_cache_ttl=43200       # 12 hours
     # )
+    
+    # Create memory service
+    memory_service = MemoryService()
     
     # Check if caching is enabled via environment variable
     # Default to True if not specified
@@ -113,6 +120,12 @@ async def lifespan(app: FastAPI):
     app.state.query_pipeline = query_pipeline
     app.state.neo4j_schema_text = neo4j_schema_text
     app.state.cache_manager = cache_manager
+    app.state.memory_service = memory_service
+    
+    # Clean up expired memory sessions
+    cleaned_sessions = memory_service.clean_expired_sessions()
+    if cleaned_sessions > 0:
+        print(f"Cleaned {cleaned_sessions} expired memory sessions")
     
     print("running fine")
     print(f"app startup time: {time.time() - start}")
