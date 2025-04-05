@@ -1,5 +1,5 @@
 import asyncio
-from typing import Optional, AsyncGenerator, Iterable
+from typing import Optional, AsyncGenerator, Iterable, Dict, List, Any
 from groq import Groq
 from ollama import Client as OllamaClient
 from langchain_community.llms import Ollama
@@ -154,6 +154,77 @@ class MultiLLMService:
                 raise ValueError(f"Unsupported provider: {self.provider}")
         except Exception as stream_err:
             err_msg = f"Streaming error: {stream_err}"
+            print(err_msg)
+            yield err_msg
+
+    async def answer_general_question(self, question: str, context: str = "", 
+                                     model_name: Optional[str] = None) -> AsyncGenerator[str, None]:
+        """
+        Generate a streaming response for general questions that don't require database queries
+        
+        Args:
+            question: The user's question
+            context: Optional context from conversation history
+            model_name: Optional model name to override the default
+            
+        Returns:
+            AsyncGenerator yielding response chunks
+        """
+        chosen_model = model_name or self.default_summary_model
+        system_prompt = """You are an expert metabolomics assistant specializing in the Human Metabolome Database (HMDB), 
+        biochemical databases, and molecular biology. Your goal is to provide scientifically accurate, 
+        well-structured answers to general questions about metabolomics, biochemistry, and related fields."""
+        
+        try:
+            if self.provider == LLMProvider.GROQ:
+                stream = self.client.chat.completions.create(
+                    model=chosen_model,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": f"Question: {question}\nContext: {context}"}
+                    ],
+                    temperature=0.7,
+                    max_tokens=2048,
+                    top_p=1.0,
+                    stream=True
+                )
+                async for chunk in self._async_iter(stream):
+                    delta = chunk.choices[0].delta
+                    if delta and delta.content:
+                        yield delta.content
+            elif self.provider == LLMProvider.OLLAMA:
+                prompt_text = f"SYSTEM: {system_prompt}\n\nUSER: Question: {question}\nContext: {context}"
+                stream = self.client.generate(
+                    model=chosen_model,
+                    prompt=prompt_text,
+                    stream=True,
+                    options={"temperature": 0.7,
+                             "num_predict": 2048,
+                             "top_p": 1.0}
+                )
+                async for resp in self._async_iter(stream):
+                    if resp.response:
+                        yield resp.response
+            elif self.provider == LLMProvider.DEEPSEEK:
+                stream = self.client.chat.completions.create(
+                    model="deepseek-chat",
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": f"Question: {question}\nContext: {context}"}
+                    ],
+                    temperature=0.7,
+                    max_tokens=1024,
+                    top_p=1.0,
+                    stream=True
+                )
+                async for chunk in self._async_iter(stream):
+                    delta = chunk.choices[0].delta
+                    if delta and delta.content:
+                        yield delta.content
+            else:
+                raise ValueError(f"Unsupported provider: {self.provider}")
+        except Exception as stream_err:
+            err_msg = f"General question streaming error: {stream_err}"
             print(err_msg)
             yield err_msg
 

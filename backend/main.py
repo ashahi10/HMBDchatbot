@@ -15,6 +15,7 @@ from backend.utils.schema_generator import generate_text_schema, get_or_cache_sc
 from backend.utils.cache_manager import CacheManager
 from backend.services.llm_service import MultiLLMService, LLMProvider
 from backend.services.memory_service import MemoryService
+from backend.services.decision_service import QueryDecisionService
 from backend.pipeline.langchain_pipeline import LangChainPipeline
 from backend.api.query_controller import router as query_router
 from backend.pipeline.hmdb_api import HMDBApiClient, RateLimiter
@@ -41,6 +42,9 @@ async def lifespan(app: FastAPI):
     
     # Create memory service
     memory_service = MemoryService()
+    
+    # Create decision service for intelligent query routing
+    decision_service = QueryDecisionService(memory_confidence_threshold=0.85)
     
     # Check if caching is enabled via environment variable
     # Default to True if not specified
@@ -121,6 +125,7 @@ async def lifespan(app: FastAPI):
     app.state.neo4j_schema_text = neo4j_schema_text
     app.state.cache_manager = cache_manager
     app.state.memory_service = memory_service
+    app.state.decision_service = decision_service
     
     # Clean up expired memory sessions
     cleaned_sessions = memory_service.clean_expired_sessions()
