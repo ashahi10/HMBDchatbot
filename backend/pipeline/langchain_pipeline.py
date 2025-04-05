@@ -6,8 +6,8 @@ from langchain_core.runnables import RunnableSequence, RunnablePassthrough
 from langchain_core.output_parsers import StrOutputParser, PydanticOutputParser
 from pydantic import BaseModel, Field
 
-from services.llm_service import MultiLLMService
-from pipeline.prompts import entity_prompt, query_plan_prompt, query_prompt, summary_prompt, api_reasoning_prompt
+from backend.services.llm_service import MultiLLMService
+from backend.pipeline.prompts import entity_prompt, query_plan_prompt, query_prompt, summary_prompt, api_reasoning_prompt
 
 BAD_RESPONSES = ["```", "json", "```json", "```cypher", "```cypher\n", "```", "cy", "pher"]
 
@@ -311,10 +311,30 @@ class LangChainPipeline:
         if not isinstance(hmdb_data, dict) or "found" not in hmdb_data or not hmdb_data["found"]:
             return {"error": "No valid data found in HMDB response"}
 
-        # ✅ Store full API response internally
+        # ✅ Store full API response in cache folder instead of current directory
         self.last_hmdb_api_result = hmdb_data  # For internal LLM access or chaining
-        with open("latest_hmdb_api_full.json", "w") as f:
-            json.dump(hmdb_data, f, indent=2)
+        
+        # Save to cache folder (if it exists) or default to current directory
+        try:
+            from pathlib import Path
+            cache_dir = Path("cache/api_responses")
+            if not cache_dir.exists():
+                cache_dir.mkdir(parents=True, exist_ok=True)
+            
+            cache_file = cache_dir / "latest_hmdb_api_full.json"
+            
+            with open(cache_file, "w") as f:
+                import json
+                json.dump(hmdb_data, f, indent=2)
+        except Exception as e:
+            print(f"Failed to save HMDB response to cache: {e}")
+            # Fallback to the original location if cache fails
+            try:
+                with open("latest_hmdb_api_full.json", "w") as f:
+                    import json
+                    json.dump(hmdb_data, f, indent=2)
+            except Exception as e:
+                print(f"Failed to save HMDB response to fallback location: {e}")
 
         # ✅ Instead of truncation, chunk by tag/key for LLM compatibility
         MAX_METABOLITES = 10

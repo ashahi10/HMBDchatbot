@@ -1,12 +1,29 @@
 from neo4j import GraphDatabase
 from neo4j.exceptions import ServiceUnavailable, AuthError, ClientError
+from typing import List, Dict, Optional, Any
+import json
+
+# Import our cache manager
+from backend.utils.cache_manager import CacheManager
 
 class Neo4jConnection:
 
-    def __init__(self, uri: str, user: str, password: str, batch_size: int = 1000):
+    def __init__(self, uri: str, user: str, password: str, batch_size: int = 1000, use_cache: bool = True):
         try:
             self._driver = GraphDatabase.driver(uri, auth=(user, password))
+            
+            # Initialize batch queue
+            self._batch_size = batch_size
+            self._queued_queries = []
+            
+            # Initialize cache manager if caching is enabled
+            self._use_cache = use_cache
+            if self._use_cache:
+                self._cache_manager = CacheManager()
+                
+            # Test connection after cache manager is initialized
             self.test_connection()
+            
         except AuthError:
             raise ValueError("Authentication failed. Check your username and password.")
         except ServiceUnavailable:
@@ -14,11 +31,8 @@ class Neo4jConnection:
         except Exception as e:
             raise ValueError(f"Unexpected error during Neo4j initialization: {str(e)}")
 
-        self._batch_size = batch_size
-        self._queued_queries = []
-
     def test_connection(self):
-        records = self.run_query("RETURN 1 AS testVal")
+        records = self.run_query("RETURN 1 AS testVal", bypass_cache=True)
         if not records or records[0].get('testVal') != 1:
             raise ValueError("Connection test failed. The query did not return the expected result.")
 
@@ -44,7 +58,19 @@ class Neo4jConnection:
 
         self._queued_queries.clear()
 
-    def run_query(self, cypher_query: str, parameters: dict = None, limit: int = None, token_limit: int = 5000) -> list:
+    def run_query(self, cypher_query: str, parameters: dict = None, limit: int = None, token_limit: int = 5000, bypass_cache: bool = False) -> list:
+        # Check cache first if enabled and not bypassing
+        if self._use_cache and not bypass_cache:
+            # If using parameters, include them in the cache key by appending to the query string
+            cache_key = cypher_query
+            if parameters:
+                cache_key = f"{cypher_query}__params__{json.dumps(parameters, sort_keys=True)}"
+            
+            cached_result = self._cache_manager.get_cached_query_result(cache_key)
+            if cached_result is not None:
+                print(f"Using cached result for query: {cypher_query[:50]}...")
+                return cached_result
+
         try:
             if limit is not None and isinstance(limit, int) and limit > 0:
                 cypher_query = cypher_query.rstrip(';')
@@ -71,7 +97,21 @@ class Neo4jConnection:
                         truncated_data.append(record)
                         current_token_count += record_token_count
 
+                    # Cache the truncated result if caching is enabled
+                    if self._use_cache:
+                        cache_key = cypher_query
+                        if parameters:
+                            cache_key = f"{cypher_query}__params__{json.dumps(parameters, sort_keys=True)}"
+                        self._cache_manager.cache_query_result(cache_key, truncated_data)
+                    
                     return truncated_data
+                
+                # Cache the full result if caching is enabled
+                if self._use_cache:
+                    cache_key = cypher_query
+                    if parameters:
+                        cache_key = f"{cypher_query}__params__{json.dumps(parameters, sort_keys=True)}"
+                    self._cache_manager.cache_query_result(cache_key, data)
                 
                 return data
         except ClientError as e:

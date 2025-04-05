@@ -5,6 +5,7 @@ import json
 import time
 from typing import Any, Dict, Optional
 from dotenv import load_dotenv
+from backend.utils.cache_manager import CacheManager
 # from requests_cache import CachedSession
 
 load_dotenv()
@@ -39,16 +40,29 @@ class RateLimiter:
 
 
 class HMDBApiClient:
-    def __init__(self, rate_limiter: RateLimiter):
+    def __init__(self, rate_limiter: RateLimiter, use_cache: bool = True):
         self.api_key = os.getenv("HMDB_API_KEY")
         self.base_url = os.getenv("HMDB_BASE_URL")
         self.headers = {"Content-Type": "application/json"}
         self.rate_limiter = rate_limiter
+        
+        # Initialize cache
+        self._use_cache = use_cache
+        if self._use_cache:
+            self._cache_manager = CacheManager()
 
     def _build_url(self, endpoint: str) -> str:
         return f"{self.base_url}/{endpoint}/?api-key={self.api_key}"
 
     def get(self, endpoint: str) -> Optional[Dict[str, Any]]:
+        # Check cache first if enabled
+        if self._use_cache:
+            cached_response = self._cache_manager.get_cached_api_response(endpoint, {})
+            if cached_response is not None:
+                print(f"Using cached response for endpoint: {endpoint}")
+                return cached_response
+        
+        # Proceed with API call if no cache or no cached data
         if not self.rate_limiter.can_make_get_request():
             print("GET request limit reached. Try again later.")
             return None
@@ -58,12 +72,25 @@ class HMDBApiClient:
             response = requests.get(url, headers=self.headers)
             response.raise_for_status()
             self.rate_limiter.record_get_request()
+            
+            # Cache the response
+            if self._use_cache:
+                self._cache_manager.cache_api_response(endpoint, {}, response.json())
+            
             return response.json()
         except requests.RequestException as e:
             print(f"GET request failed: {e}")
             return None
      
     def post(self, endpoint: str, payload: dict) -> Optional[Dict[str, Any]]:
+        # Check cache first if enabled
+        if self._use_cache:
+            cached_response = self._cache_manager.get_cached_api_response(endpoint, payload)
+            if cached_response is not None:
+                print(f"Using cached response for {endpoint} with payload: {payload}")
+                return cached_response
+                
+        # Proceed with API call if no cache or no cached data
         if not self.rate_limiter.can_make_get_request():
             return None
 
@@ -72,6 +99,11 @@ class HMDBApiClient:
             response = requests.post(url, json=payload, headers=self.headers)
             response.raise_for_status()
             self.rate_limiter.record_get_request()
+            
+            # Cache the response
+            if self._use_cache:
+                self._cache_manager.cache_api_response(endpoint, payload, response.json())
+                
             return response.json()
         except requests.RequestException as e:
             print(f"POST request failed: {e}")

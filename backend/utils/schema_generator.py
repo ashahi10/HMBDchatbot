@@ -1,5 +1,6 @@
-from typing import Dict, Any, List
-from utils.neo4j_connection import Neo4jConnection
+from typing import Dict, Any, List, Optional
+from backend.utils.neo4j_connection import Neo4jConnection
+from backend.utils.cache_manager import CacheManager
 
 def infer_property_type(value: Any) -> str:
     if isinstance(value, bool):
@@ -66,7 +67,29 @@ def get_relationship_mappings(neo4j_conn: Neo4jConnection, rel_type: str) -> Lis
                 mappings.append(f"(:{start})-[:{rel_type}]->(:{end})")
     return mappings
 
-def generate_text_schema(neo4j_conn: Neo4jConnection) -> str:
+def generate_text_schema(neo4j_conn: Neo4jConnection, use_cache: bool = True, database: str = "default") -> str:
+    """
+    Generate a text representation of the Neo4j database schema.
+    
+    Args:
+        neo4j_conn: Neo4j connection object
+        use_cache: Whether to use cached schema if available
+        database: Database name for cache key (useful for multi-database setups)
+        
+    Returns:
+        Text representation of the schema
+    """
+    # Check if we should use cache and if a cached schema exists
+    if use_cache:
+        cache_manager = CacheManager()
+        cached_schema = cache_manager.get_cached_schema(database)
+        if cached_schema:
+            print("Using cached database schema")
+            return cached_schema
+    
+    # If no cache or cache disabled, generate the schema
+    print("Generating database schema...")
+    
     node_labels = [
         r["label"]
         for r in neo4j_conn.run_query("CALL db.labels() YIELD label RETURN label ORDER BY label")
@@ -103,7 +126,33 @@ def generate_text_schema(neo4j_conn: Neo4jConnection) -> str:
         for mapping in mappings:
             lines.append(mapping)
     
-    return "\n".join(lines)
+    schema_text = "\n".join(lines)
+    
+    # Cache the generated schema if caching is enabled
+    if use_cache:
+        cache_manager = CacheManager()
+        cache_manager.cache_schema(schema_text, database)
+    
+    return schema_text
+
+def get_or_cache_schema(neo4j_conn: Neo4jConnection, database: str = "default", force_reload: bool = False) -> str:
+    """
+    Get schema from cache if available, or generate and cache it.
+    
+    Args:
+        neo4j_conn: Neo4j connection object
+        database: Database name for cache key
+        force_reload: If True, skip cache and regenerate schema
+        
+    Returns:
+        Text representation of the schema
+    """
+    # Use existing schema generation but control caching explicitly
+    return generate_text_schema(
+        neo4j_conn=neo4j_conn, 
+        use_cache=not force_reload, 
+        database=database
+    )
 
 if __name__ == "__main__":
     pass
