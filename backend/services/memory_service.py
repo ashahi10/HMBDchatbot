@@ -228,7 +228,7 @@ class MemoryService:
             total_memories: Total number of memories
             
         Returns:
-            Tuple of (total_score, score_components)
+            Tuple of (total_score, score_components) where total_score is normalized to [0,1]
         """
         score_components = {}
         
@@ -250,7 +250,8 @@ class MemoryService:
         
         # 3. Calculate entity overlap score (highest weight)
         entity_overlap = query_entities.intersection(memory_entities)
-        entity_score = len(entity_overlap) * 1.0  # Each entity match gets 1.0 point
+        # Normalize entity score to [0,1] range - each entity match gets 0.4 points, max 0.4
+        entity_score = min(len(entity_overlap) * 0.4, 0.4)
         score_components["entity_match"] = entity_score
         
         # 4. Calculate keyword similarity (medium weight)
@@ -259,7 +260,8 @@ class MemoryService:
         memory_words = set(memory.get("user_query", "").lower().split())
         
         common_words = query_words.intersection(memory_words)
-        keyword_score = len(common_words) * 0.5 / max(len(query_words), len(memory_words))
+        # Normalize keyword score to [0,1] range - max 0.3
+        keyword_score = min(len(common_words) * 0.3 / max(len(query_words), len(memory_words)), 0.3)
         score_components["keyword_similarity"] = keyword_score
         
         # 5. Calculate tag similarity (lower weight)
@@ -267,10 +269,12 @@ class MemoryService:
         memory_tags = set(memory.get("tags", []))
         
         tag_overlap = query_tags.intersection(memory_tags)
-        tag_score = len(tag_overlap) * 0.25
+        # Normalize tag score to [0,1] range - max 0.15
+        tag_score = min(len(tag_overlap) * 0.15, 0.15)
         score_components["tag_match"] = tag_score
         
         # 6. Apply recency bias (newer memories get slight boost)
+        # Normalize recency score to [0,1] range - max 0.1
         recency_score = 0.1 * (1 - (recency_index / max(1, total_memories)))
         score_components["recency"] = recency_score
         
@@ -283,7 +287,8 @@ class MemoryService:
         
         if is_ambiguous:
             # For ambiguous queries, strongly boost the recency factor
-            ambiguity_score = 0.5 * (1 - (recency_index / max(1, min(3, total_memories))))
+            # Normalize ambiguity score to [0,1] range - max 0.2
+            ambiguity_score = min(0.2 * (1 - (recency_index / max(1, min(3, total_memories)))), 0.2)
             score_components["ambiguity_boost"] = ambiguity_score
         
         # 8. Penalize entity mismatch (if queries are about different entities)
@@ -291,12 +296,15 @@ class MemoryService:
         entity_mismatch_penalty = 0
         
         if not is_ambiguous and query_entities and memory_entities and not entity_overlap:
-            # Reduce penalty to allow more matches
-            entity_mismatch_penalty = -1.0
+            # Apply a normalized penalty that won't push score below 0
+            entity_mismatch_penalty = -0.3
             score_components["entity_mismatch"] = entity_mismatch_penalty
         
-        # Calculate total score
+        # Calculate total score - sum of all components
         total_score = entity_score + keyword_score + tag_score + recency_score + ambiguity_score + entity_mismatch_penalty
+        
+        # Ensure final score is in [0,1] range
+        total_score = max(0.0, min(1.0, total_score))
         
         return (total_score, score_components)
     
