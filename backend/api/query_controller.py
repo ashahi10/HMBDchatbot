@@ -123,7 +123,15 @@ async def query_endpoint(query_request: QueryRequest, request: Request):
     source_accumulator = []
     entity_accumulator = set()
     tags_accumulator = set()
-    raw_entity_data = {}
+    
+    # Enhanced raw data capture for Phase 3 memory reuse
+    raw_data_accumulator = {
+        "entity_extraction": None,
+        "neo4j_results": None,
+        "api_data": None,
+        "query_plan": None,
+        "query": None
+    }
     
     # PHASE 2 ENHANCEMENT: Choose the best query handling path
     if decision == "memory":
@@ -132,6 +140,10 @@ async def query_endpoint(query_request: QueryRequest, request: Request):
             # Extract the stored answer from memory
             stored_answer = memory_entry.get("answer", "")
             stored_entities = memory_entry.get("entities", [])
+            
+            # Check if we have raw_data for potential reuse
+            if memory_entry.get("raw_data"):
+                raw_data_accumulator.update(memory_entry.get("raw_data", {}))
             
             # Format as SSE message for consistency
             memory_section = {
@@ -152,13 +164,14 @@ async def query_endpoint(query_request: QueryRequest, request: Request):
             yield f"data:{json.dumps({'section': 'DONE'})}\n\n"
             
             # After completion, store that we used memory
-            memory_service.add(
+            memory_service.store(
                 session_id=session_id,
                 user_query=query_request.question,
                 answer=stored_answer,
-                entities=list(entity_accumulator),
-                tags=list(tags_accumulator),
-                source="memory_reuse"
+                entity=list(entity_accumulator)[0] if entity_accumulator else None,
+                tags=list(tags_accumulator) if tags_accumulator else None,
+                source="memory_reuse",
+                raw_data=raw_data_accumulator if any(raw_data_accumulator.values()) else None
             )
         
         return StreamingResponse(memory_wrapper(), media_type="text/event-stream")
@@ -209,14 +222,18 @@ async def query_endpoint(query_request: QueryRequest, request: Request):
             })
             entity_accumulator.update(extracted_entities)
             
+            # Add general answer data to raw_data for potential future reuse
+            raw_data_accumulator["general_answer"] = answer_text
+            
             # Store the interaction in memory
-            memory_service.add(
+            memory_service.store(
                 session_id=session_id,
                 user_query=query_request.question,
                 answer=answer_text,
-                entities=list(entity_accumulator),
-                tags=list(tags_accumulator),
-                source="general"
+                entity=list(entity_accumulator)[0] if entity_accumulator else None,
+                tags=list(tags_accumulator) if tags_accumulator else None,
+                source="general",
+                raw_data=raw_data_accumulator if any(raw_data_accumulator.values()) else None
             )
         
         return StreamingResponse(general_wrapper(), media_type="text/event-stream")
@@ -248,12 +265,27 @@ async def query_endpoint(query_request: QueryRequest, request: Request):
                     extracted_entities = extract_entities_from_response(message)
                     entity_accumulator.update(extracted_entities)
                     
-                    # Accumulate entity extraction data for raw storage
+                    # Enhanced accumulation for Phase 3 memory reuse
+                    # Capture entity extraction results
                     if msg_section == "Extracting entities" and message.get("text"):
                         try:
-                            raw_entity_data["entity_extraction"] = json.loads(message.get("text", "{}"))
+                            extracted_data = json.loads(message.get("text", "{}"))
+                            raw_data_accumulator["entity_extraction"] = extracted_data
                         except:
                             pass
+                    
+                    # Capture query planning 
+                    if msg_section == "Query planning" and message.get("text"):
+                        try:
+                            # Store the query plan for future reference
+                            raw_data_accumulator["query_plan"] = message.get("text")
+                        except:
+                            pass
+                            
+                    # Capture query text
+                    if msg_section == "Query execution" and message.get("text"):
+                        # Store the actual query that was executed
+                        raw_data_accumulator["query"] = message.get("text")
                     
                     # Track source
                     if msg_section == "DB Summary":
@@ -365,6 +397,7 @@ async def query_endpoint(query_request: QueryRequest, request: Request):
             
             # Store in memory if we have a valid answer
             if full_answer:
+                # Store with enhanced raw data for Phase 3 memory reuse
                 success = memory_service.store(
                     session_id=session_id,
                     user_query=query_request.question,
@@ -372,11 +405,13 @@ async def query_endpoint(query_request: QueryRequest, request: Request):
                     source=source,
                     entity=entity,
                     tags=list(tags_accumulator) if tags_accumulator else None,
-                    raw_data=raw_entity_data if raw_entity_data else None
+                    raw_data=raw_data_accumulator if any(raw_data_accumulator.values()) else None
                 )
                 
                 if os.getenv("DEBUG_MEMORY_RANKING", "").lower() == "true" and success:
                     print(f"[DEBUG] Stored memory with entity: {entity}")
+                    if any(raw_data_accumulator.values()):
+                        print(f"[DEBUG] Stored raw data types: {[k for k, v in raw_data_accumulator.items() if v]}")
     
     # Return streaming response with wrapped pipeline
     return StreamingResponse(pipeline_wrapper(), media_type="text/event-stream", headers={"X-Session-ID": session_id})

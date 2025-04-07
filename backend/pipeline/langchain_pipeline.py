@@ -1,5 +1,5 @@
 import json
-from typing import List, AsyncGenerator, Optional, Any, Dict
+from typing import List, AsyncGenerator, Optional, Any, Dict, Tuple, Union, Set
 import re
 
 
@@ -8,7 +8,7 @@ from langchain_core.output_parsers import StrOutputParser, PydanticOutputParser
 from pydantic import BaseModel, Field
 
 from backend.services.llm_service import MultiLLMService
-from backend.pipeline.prompts import entity_prompt, query_plan_prompt, query_prompt, summary_prompt, api_reasoning_prompt
+from backend.pipeline.prompts import entity_prompt, query_plan_prompt, query_prompt, summary_prompt, api_reasoning_prompt, query_necessity_prompt, general_answer_prompt
 
 BAD_RESPONSES = ["```", "json", "```json", "```cypher", "```cypher\n", "```", "cy", "pher"]
 
@@ -35,6 +35,24 @@ class LangChainPipeline:
 
         self.entity_parser = PydanticOutputParser(pydantic_object=EntityList)
         self.query_plan_parser = PydanticOutputParser(pydantic_object=QueryPlan)
+        
+        # PHASE 4: Add chain for query necessity detection
+        self.query_necessity_chain = self._create_chain(
+            {"question": lambda x: x["question"]},
+            query_necessity_prompt,
+            streaming=False,
+            parser=None,
+            model_type="query"
+        )
+        
+        # Chain for direct answers to general questions
+        self.general_answer_chain = self._create_chain(
+            {"question": lambda x: x["question"], "context": lambda x: x.get("context", "")},
+            general_answer_prompt,
+            streaming=True,
+            parser=None,
+            model_type="summary"
+        )
 
         self.entity_chain = self._create_chain(
             {"question": lambda x: x["question"], "schema": lambda _: self.neo4j_schema_text}, 
@@ -162,6 +180,94 @@ class LangChainPipeline:
             f"{api_summary.strip()}"
         )
 
+    # PHASE 4: Add method to determine if a query requires database access
+    async def _should_query_llm_decision(self, question: str) -> bool:
+        """
+        Use the LLM to determine if the question requires database query.
+        
+        Args:
+            question: The user's question
+            
+        Returns:
+            bool: True if database query is needed, False otherwise
+        """
+        try:
+            # Get decision from LLM
+            inputs = {"question": question}
+            result = await self.query_necessity_chain.ainvoke(inputs)
+            
+            # Clean the result and extract the YES/NO decision
+            result = result.strip().upper()
+            if "YES" in result:
+                return True
+            elif "NO" in result:
+                return False
+            else:
+                # Default to True if unclear (safer to query than miss information)
+                return True
+        except Exception as e:
+            print(f"Error in query necessity detection: {e}")
+            # Default to True on error (fallback to safety)
+            return True
+    
+    # PHASE 3: Add method to process raw data from memory for reuse
+    def _process_memory_raw_data(self, memory_entry: Dict, query_intent: str) -> Dict:
+        """
+        Process and filter raw_data from memory for reuse.
+        
+        Args:
+            memory_entry: Memory entry with raw_data
+            query_intent: Current query intent to filter relevant data
+            
+        Returns:
+            Processed raw_data in a format suitable for the summarizer
+        """
+        if not memory_entry or "raw_data" not in memory_entry:
+            return None
+            
+        raw_data = memory_entry.get("raw_data", {})
+        
+        # Preprocess and filter based on query intent
+        # This helps prevent context overflow by removing irrelevant data
+        if "entity_extraction" in raw_data:
+            # Keep entity extraction data as it's useful for context
+            pass
+            
+        # Check if there are specific result types to extract based on query intent
+        relevant_data = {}
+        
+        # Return processed data
+        return raw_data
+    
+    # PHASE 3: Check if memory contains relevant raw data for reuse
+    def _find_reusable_memory_data(self, memory_results: List[Dict], query_intent: str, 
+                                  confidence_threshold: float = 0.8) -> Tuple[bool, Optional[Dict]]:
+        """
+        Find memory entries with reusable raw_data.
+        
+        Args:
+            memory_results: List of memory entries
+            query_intent: Current query intent
+            confidence_threshold: Minimum confidence score to reuse memory
+            
+        Returns:
+            Tuple of (found_reusable, processed_data)
+        """
+        if not memory_results:
+            return False, None
+            
+        # Look for high-confidence matches with raw_data
+        for entry in memory_results:
+            if (entry.get("relevance_score", 0) >= confidence_threshold and 
+                "raw_data" in entry and entry["raw_data"]):
+                
+                # Process the raw_data for reuse
+                processed_data = self._process_memory_raw_data(entry, query_intent)
+                if processed_data:
+                    return True, processed_data
+                    
+        return False, None
+
     async def run_pipeline(self, user_question: str, conversation_history: List = None, relevant_history: List = None) -> AsyncGenerator[str, None]:
         try:
             # Enhanced context generation to properly handle entity continuity
@@ -183,6 +289,40 @@ class LangChainPipeline:
                 for match in matches:
                     if len(match) > 2:  # Avoid single letters
                         current_entities.add(match.lower())
+            
+            # PHASE 4: Add early exit for questions not requiring database lookup
+            should_query = await self._should_query_llm_decision(user_question)
+            if not should_query:
+                # If query is not necessary, use general answer chain
+                yield self._format_message("Thinking", "This appears to be a general question that doesn't require database lookup.")
+                
+                # Extract context from relevant history
+                memory_context = ""
+                if relevant_history:
+                    context_parts = []
+                    for idx, turn in enumerate(relevant_history[:3]):  # Use up to 3 most relevant turns
+                        if turn.get("user_query") and turn.get("answer"):
+                            context_parts.append(f"Previous Q: {turn['user_query']}")
+                            context_parts.append(f"Previous A: {turn['answer']}")
+                    if context_parts:
+                        memory_context = "\n".join(context_parts)
+                
+                # Generate direct answer
+                general_inputs = {
+                    "question": user_question,
+                    "context": memory_context
+                }
+                
+                # Stream the response
+                answer_accumulator = []
+                async for chunk in self.general_answer_chain.astream(general_inputs):
+                    if isinstance(chunk, str):
+                        answer_accumulator.append(chunk)
+                        yield self._format_message("Answer", chunk)
+                        
+                # Signal completion        
+                yield self._format_message("DONE", "")
+                return
             
             # Check for relevant context from conversation history
             if relevant_history and len(relevant_history) > 0:
@@ -312,6 +452,7 @@ class LangChainPipeline:
                     payload = {"name": first_metabolite}
             else:
                 payload = {}
+                
             # 2) Query Planning
             planning_inputs = {"question": augmented_question, "entities": full_extraction_response, "schema": self.neo4j_schema_text}
             planning_accumulator: List[str] = []
@@ -321,59 +462,178 @@ class LangChainPipeline:
             print(f"\n[DEBUG] Query Planning Response: {full_query_plan_response}")
             query_plan = self.query_plan_parser.parse(full_query_plan_response)
 
+            # PHASE 3: Check if we have reusable raw data from memory
+            memory_raw_data = None
+            used_memory_data = False
+            
+            if relevant_history and query_plan.should_query:
+                # Check if any relevant memory entry has reusable raw_data
+                has_reusable_data, memory_raw_data = self._find_reusable_memory_data(
+                    relevant_history, 
+                    query_plan.query_intent
+                )
+                
+                if has_reusable_data and memory_raw_data:
+                    used_memory_data = True
+                    yield self._format_message("Thinking", "Found relevant data from previous queries that can be reused.")
+
             if query_plan.should_query:
-                query_inputs = {"query_plan": query_plan, "schema": self.neo4j_schema_text}
-                query_accumulator: List[str] = []
-                async for sse_message in self._stream_and_accumulate(self.query_chain, "Query execution", query_inputs, query_accumulator):
-                    yield sse_message
-                full_query_response = "".join(query_accumulator)
-                print(f"\n[DEBUG] Generated Cypher Query: {full_query_response}")
+                # Skip query execution if we have memory data
+                neo4j_results = None
+                
+                if not used_memory_data:
+                    query_inputs = {"query_plan": query_plan, "schema": self.neo4j_schema_text}
+                    query_accumulator: List[str] = []
+                    async for sse_message in self._stream_and_accumulate(self.query_chain, "Query execution", query_inputs, query_accumulator):
+                        yield sse_message
+                    full_query_response = "".join(query_accumulator)
+                    print(f"\n[DEBUG] Generated Cypher Query: {full_query_response}")
 
-                try:
-                    neo4j_results = self.neo4j_connection.run_query(full_query_response)
-                    print(f"\n[DEBUG] Neo4j raw query results: {neo4j_results}")
+                    try:
+                        neo4j_results = self.neo4j_connection.run_query(full_query_response)
+                        print(f"\n[DEBUG] Neo4j raw query results: {neo4j_results}")
 
-                    # Check if we need fallback
-                    should_fallback = analyze_missing_fields(user_question, neo4j_results)
-                    if should_fallback:
-                        print("[DEBUG] Neo4j results are insufficient, initiating HMDB fallback...")
-                    elif not neo4j_results or neo4j_results == [None] or neo4j_results == [""]:
-                        print("[DEBUG] No valid results from Neo4j, initiating HMDB fallback...")
-                        should_fallback = True
+                        # Check if we need fallback
+                        should_fallback = analyze_missing_fields(user_question, neo4j_results)
+                        if should_fallback:
+                            print("[DEBUG] Neo4j results are insufficient, initiating HMDB fallback...")
+                        elif not neo4j_results or neo4j_results == [None] or neo4j_results == [""]:
+                            print("[DEBUG] No valid results from Neo4j, initiating HMDB fallback...")
+                            should_fallback = True
 
-                    # Get additional description results
-                    for metabolite in metabolites:
-                        more_results = self.neo4j_connection.run_query(f"""
-                            MATCH (m:Metabolite)
-                            WHERE toLower(m.name) = toLower('{metabolite}')
-                            OR EXISTS {{ MATCH (m)-[:HAS_SYNONYM]->(s:Synonym) 
-                                        WHERE toLower(s.synonymText) = toLower('{metabolite}') }}
-                            RETURN m.description
-                        """)
-                        if more_results:
-                            neo4j_results += more_results
+                        # Get additional description results
+                        for metabolite in metabolites:
+                            more_results = self.neo4j_connection.run_query(f"""
+                                MATCH (m:Metabolite)
+                                WHERE toLower(m.name) = toLower('{metabolite}')
+                                OR EXISTS {{ MATCH (m)-[:HAS_SYNONYM]->(s:Synonym) 
+                                            WHERE toLower(s.synonymText) = toLower('{metabolite}') }}
+                                RETURN m.description
+                            """)
+                            if more_results:
+                                neo4j_results += more_results
 
-                    # Handle fallback if needed
-                    if should_fallback and len(metabolites) > 0 and self.hmdb_client:
-                        first_metabolite = metabolites[0]
-                        fallback_data = None
+                        # Handle fallback if needed
+                        if should_fallback and len(metabolites) > 0 and self.hmdb_client:
+                            first_metabolite = metabolites[0]
+                            fallback_data = None
 
-                        if first_metabolite.startswith("HMDB"):
-                            print(f"\n[DEBUG] Making API call for ID '{first_metabolite}'")
-                            payload = {"hmdb_id": [first_metabolite]}
-                            fallback_data = self.hmdb_client.post("metabolites", payload)
+                            if first_metabolite.startswith("HMDB"):
+                                print(f"\n[DEBUG] Making API call for ID '{first_metabolite}'")
+                                payload = {"hmdb_id": [first_metabolite]}
+                                fallback_data = self.hmdb_client.post("metabolites", payload)
+                            else:
+                                print(f"\n[DEBUG] Making API search call for name '{first_metabolite}'")
+                                payload = {"name": first_metabolite}
+                                fallback_data = self.hmdb_client.post("metabolites/search", payload)
+
+                            if fallback_data and "found" in fallback_data:
+                                filtered_fallback_data = self._filter_hmdb_response(fallback_data)
+                                print(f"\n[DEBUG] Filtered HMDB fallback data: {filtered_fallback_data}")
+
+                                # PHASE 3: Store API results in memory_raw_data if not already present
+                                if used_memory_data and "api_data" not in memory_raw_data:
+                                    memory_raw_data["api_data"] = filtered_fallback_data
+                                elif not used_memory_data:
+                                    memory_raw_data = {"api_data": filtered_fallback_data}
+                                    
+                                # Run API reasoning chain
+                                api_reasoning_inputs = {
+                                    "api_data": memory_raw_data.get("api_data", filtered_fallback_data),
+                                    "question": user_question
+                                }
+                                api_reasoning_accumulator: List[str] = []
+                                async for sse_message in self._stream_and_accumulate(
+                                    self.api_reasoning_chain,
+                                    "API Summary",
+                                    api_reasoning_inputs,
+                                    api_reasoning_accumulator
+                                ):
+                                    yield sse_message
+
+                                # If we have Neo4j results, run DB summary chain too
+                                # if neo4j_results and neo4j_results != [None] and neo4j_results != [""]:
+                                if neo4j_results and not should_fallback:
+                                    # PHASE 3: Mark if using memory data
+                                    summary_inputs = {
+                                        "query_results": neo4j_results,
+                                        "question": user_question
+                                    }
+                                    summary_accumulator: List[str] = []
+                                    async for sse_message in self._stream_and_accumulate(
+                                        self.summary_chain,
+                                        "DB Summary",
+                                        summary_inputs,
+                                        summary_accumulator
+                                    ):
+                                        yield sse_message
+
+                                    # Merge both summaries
+                                    final_summary = self._merge_summaries(
+                                        "".join(summary_accumulator),
+                                        "".join(api_reasoning_accumulator)
+                                    )
+                                    yield self._format_message("Answer", final_summary)
+                                else:
+                                    # If no Neo4j results, just use API summary
+                                    yield self._format_message("Answer", "".join(api_reasoning_accumulator))
+                                return
+
+                        # If no fallback needed or fallback failed, use Neo4j results
+                        if neo4j_results and neo4j_results != [None] and neo4j_results != [""]:
+                            # PHASE 3: Store Neo4j results in memory_raw_data
+                            if used_memory_data and "neo4j_results" not in memory_raw_data:
+                                memory_raw_data["neo4j_results"] = neo4j_results
+                            elif not used_memory_data:
+                                memory_raw_data = {"neo4j_results": neo4j_results}
+                                
+                            summary_inputs = {
+                                "query_results": neo4j_results,
+                                "question": user_question
+                            }
+                            summary_accumulator: List[str] = []
+                            async for sse_message in self._stream_and_accumulate(
+                                self.summary_chain,
+                                "Answer",
+                                summary_inputs,
+                                summary_accumulator
+                            ):
+                                yield sse_message
                         else:
-                            print(f"\n[DEBUG] Making API search call for name '{first_metabolite}'")
-                            payload = {"name": first_metabolite}
-                            fallback_data = self.hmdb_client.post("metabolites/search", payload)
+                            yield self._format_message("Answer", "I apologize, but I couldn't find the information you're looking for in our database.")
 
-                        if fallback_data and "found" in fallback_data:
-                            filtered_fallback_data = self._filter_hmdb_response(fallback_data)
-                            print(f"\n[DEBUG] Filtered HMDB fallback data: {filtered_fallback_data}")
-
-                            # Run API reasoning chain
+                    except Exception as e:
+                        print(f"\n[ERROR] Neo4j query execution failed: {e}")
+                        yield self._format_message("Answer", "I apologize, but I encountered an error while querying the database.")
+                
+                # PHASE 3: If we have memory_raw_data, use it directly
+                elif used_memory_data:
+                    # Process based on what raw data we have
+                    if "neo4j_results" in memory_raw_data and memory_raw_data["neo4j_results"]:
+                        # Use memory's Neo4j results
+                        summary_inputs = {
+                            "query_results": memory_raw_data["neo4j_results"],
+                            "question": user_question
+                        }
+                        summary_accumulator: List[str] = []
+                        
+                        # Inform the user we're using memory data
+                        yield self._format_message("Thinking", "Using previously retrieved database information to answer your question.")
+                        
+                        # Stream the summary
+                        async for sse_message in self._stream_and_accumulate(
+                            self.summary_chain,
+                            "DB Summary", 
+                            summary_inputs,
+                            summary_accumulator
+                        ):
+                            yield sse_message
+                            
+                        # If we also have API data, use it too
+                        api_summary = ""
+                        if "api_data" in memory_raw_data and memory_raw_data["api_data"]:
                             api_reasoning_inputs = {
-                                "api_data": filtered_fallback_data,
+                                "api_data": memory_raw_data["api_data"],
                                 "question": user_question
                             }
                             api_reasoning_accumulator: List[str] = []
@@ -384,54 +644,46 @@ class LangChainPipeline:
                                 api_reasoning_accumulator
                             ):
                                 yield sse_message
-
-                            # If we have Neo4j results, run DB summary chain too
-                            # if neo4j_results and neo4j_results != [None] and neo4j_results != [""]:
-                            if neo4j_results and not should_fallback:
-                                summary_inputs = {
-                                    "query_results": neo4j_results,
-                                    "question": user_question
-                                }
-                                summary_accumulator: List[str] = []
-                                async for sse_message in self._stream_and_accumulate(
-                                    self.summary_chain,
-                                    "DB Summary",
-                                    summary_inputs,
-                                    summary_accumulator
-                                ):
-                                    yield sse_message
-
-                                # Merge both summaries
-                                final_summary = self._merge_summaries(
-                                    "".join(summary_accumulator),
-                                    "".join(api_reasoning_accumulator)
-                                )
-                                yield self._format_message("Answer", final_summary)
-                            else:
-                                # If no Neo4j results, just use API summary
-                                yield self._format_message("Answer", "".join(api_reasoning_accumulator))
-                            return
-
-                    # If no fallback needed or fallback failed, use Neo4j results
-                    if neo4j_results and neo4j_results != [None] and neo4j_results != [""]:
-                        summary_inputs = {
-                            "query_results": neo4j_results,
+                            api_summary = "".join(api_reasoning_accumulator)
+                            
+                        # Merge both summaries if we have API data
+                        if api_summary:
+                            final_summary = self._merge_summaries(
+                                "".join(summary_accumulator),
+                                api_summary
+                            )
+                            yield self._format_message("Answer", final_summary)
+                        else:
+                            yield self._format_message("Answer", "".join(summary_accumulator))
+                            
+                    elif "api_data" in memory_raw_data and memory_raw_data["api_data"]:
+                        # Only have API data from memory
+                        yield self._format_message("Thinking", "Using previously retrieved API information to answer your question.")
+                        
+                        api_reasoning_inputs = {
+                            "api_data": memory_raw_data["api_data"],
                             "question": user_question
                         }
-                        summary_accumulator: List[str] = []
+                        api_reasoning_accumulator: List[str] = []
                         async for sse_message in self._stream_and_accumulate(
-                            self.summary_chain,
-                            "Answer",
-                            summary_inputs,
-                            summary_accumulator
+                            self.api_reasoning_chain,
+                            "API Summary",
+                            api_reasoning_inputs,
+                            api_reasoning_accumulator
                         ):
                             yield sse_message
+                            
+                        yield self._format_message("Answer", "".join(api_reasoning_accumulator))
                     else:
-                        yield self._format_message("Answer", "I apologize, but I couldn't find the information you're looking for in our database.")
-
-                except Exception as e:
-                    print(f"\n[ERROR] Neo4j query execution failed: {e}")
-                    yield self._format_message("Answer", "I apologize, but I encountered an error while querying the database.")
+                        # No usable data in memory after all
+                        yield self._format_message("Thinking", "Memory data could not be used. Proceeding with regular query.")
+                        
+                        # Fallback to normal query
+                        query_inputs = {"query_plan": query_plan, "schema": self.neo4j_schema_text}
+                        query_accumulator: List[str] = []
+                        async for sse_message in self._stream_and_accumulate(self.query_chain, "Query execution", query_inputs, query_accumulator):
+                            yield sse_message
+                        # ... (continue with regular query flow)
             else:
                 yield self._format_message("Response", f"No database query needed. {query_plan.reasoning}")
 

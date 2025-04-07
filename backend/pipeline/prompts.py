@@ -268,3 +268,33 @@ general_answer_prompt = PromptTemplate.from_template("""
 
     Respond in a clear, scientifically accurate manner that demonstrates your expertise while remaining accessible to the user's level of understanding.
 """)
+
+# New prompt for query necessity detection
+query_necessity_prompt = PromptTemplate.from_template("""
+    You are an intelligent query router for a metabolomics assistant. Your task is to determine if a user question requires querying a metabolomics database for a factual answer.
+
+    User Question: {question}
+
+    Analyze this question carefully and determine if it requires factual data from a structured database. Consider:
+
+    1. Questions about specific metabolites, compounds, or HMDB IDs definitely need database lookup.
+    2. Questions about chemical properties (formulas, structures, weights, etc.) need database lookup.
+    3. Questions about pathways, concentrations, or relationships between specific entities need database lookup.
+    4. General knowledge questions, explanations of concepts, processes or methodologies do NOT need database lookup.
+    5. Casual conversation, greetings, follow-ups without specific entities do NOT need database lookup.
+
+    Examples that NEED database lookup:
+    - "What is the molecular weight of citric acid?"
+    - "Show me the structure of HMDB0000094"
+    - "What pathways is glucose involved in?"
+    - "Compare the properties of fructose and glucose"
+
+    Examples that do NOT need database lookup:
+    - "What is metabolomics?"
+    - "How does mass spectrometry work?"
+    - "Explain the difference between LC-MS and GC-MS"
+    - "Thank you for the information"
+    - "Can you tell me more about the general process of metabolism?"
+
+    Return ONLY "YES" if database lookup is needed, or "NO" if it's not needed. Nothing else.
+""")
