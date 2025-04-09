@@ -44,7 +44,7 @@ async def lifespan(app: FastAPI):
     memory_service = MemoryService()
     
     # Create decision service for intelligent query routing
-    decision_service = QueryDecisionService(memory_confidence_threshold=0.85)
+    decision_service = QueryDecisionService(memory_confidence_threshold=0.65)
     
     # Check if caching is enabled via environment variable
     # Default to True if not specified

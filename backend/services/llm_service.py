@@ -29,13 +29,13 @@ class MultiLLMService:
         else:
             raise ValueError(f"Unsupported provider: {provider}")
 
-    def get_langchain_llm(self, streaming: bool = False):
+    def get_langchain_llm(self, streaming: bool = False, temperature: float = None, max_tokens: int = None):
         if self.provider == LLMProvider.GROQ:
             return ChatGroq(
                 api_key=self.api_key,
                 model_name=self.default_query_model,
-                temperature=0.2,
-                max_tokens=2048,
+                temperature=temperature if temperature is not None else 0.2,
+                max_tokens=max_tokens if max_tokens is not None else 2048,
                 streaming=streaming
             )
         elif self.provider == LLMProvider.OLLAMA:

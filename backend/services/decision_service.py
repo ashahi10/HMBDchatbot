@@ -50,7 +50,7 @@ class QueryDecisionService:
         "pathway", "metabolite", "enzyme", "protein", "gene"
     }
     
-    def __init__(self, memory_confidence_threshold: float = 0.85):
+    def __init__(self, memory_confidence_threshold: float = 0.65):
         """
         Initialize the decision service
         
@@ -197,7 +197,9 @@ class QueryDecisionService:
         
         # Enhance the decision with contextual information
         is_followup = self._is_likely_followup(query, conversation_history)
-        has_entity_match = score_components.get("entity_match", 0) > 0.5
+        has_entity_match = score_components.get("entity_match", 0) > 0
+        exact_entity_match = score_components.get("entity_match", 0) > 0.35
+        high_keyword_similarity = score_components.get("keyword_similarity", 0) > 0.2
         
         # Determine if this is a high-confidence match
         if relevance_score >= self.memory_confidence_threshold:
@@ -205,8 +207,13 @@ class QueryDecisionService:
             return True, top_memory
         
         # For follow-up questions, we can be more lenient with the threshold
-        if is_followup and has_entity_match and relevance_score >= (self.memory_confidence_threshold * 0.8):
+        if is_followup and has_entity_match and relevance_score >= (self.memory_confidence_threshold * 0.9):
             logger.info(f"Found good memory match for follow-up question ({relevance_score:.2f}): {top_memory.get('user_query')}")
+            return True, top_memory
+        
+        # For repeated questions with the same entity
+        if exact_entity_match and high_keyword_similarity and relevance_score >= (self.memory_confidence_threshold * 0.8):
+            logger.info(f"Found match for repeated question with same entity ({relevance_score:.2f}): {top_memory.get('user_query')}")
             return True, top_memory
             
         # Log the decision for debugging

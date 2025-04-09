@@ -333,7 +333,7 @@ class MemoryService:
         
         return tags
     
-    def find_relevant(self, session_id: str, user_query: str, threshold: float = 0.3) -> List[Dict]:
+    def find_relevant(self, session_id: str, user_query: str, threshold: float = 0.2) -> List[Dict]:
         """
         Find relevant memory entries based on the current query using a sophisticated scoring system
         
@@ -372,7 +372,7 @@ class MemoryService:
             # Lower the threshold for ambiguous queries
             effective_threshold = threshold
             if "ambiguity_boost" in score_components:
-                effective_threshold = threshold * 0.75  # 25% lower threshold for ambiguous queries
+                effective_threshold = threshold * 0.7  # 30% lower threshold for ambiguous queries
             
             # Only include memories that exceed the threshold and don't have severe penalties
             if relevance_score >= effective_threshold:

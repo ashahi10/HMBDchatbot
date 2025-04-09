@@ -1,7 +1,8 @@
 import json
 from typing import List, AsyncGenerator, Optional, Any, Dict, Tuple, Union, Set
 import re
-
+import os
+from dotenv import load_dotenv
 
 from langchain_core.runnables import RunnableSequence, RunnablePassthrough
 from langchain_core.output_parsers import StrOutputParser, PydanticOutputParser
@@ -9,6 +10,8 @@ from pydantic import BaseModel, Field
 
 from backend.services.llm_service import MultiLLMService
 from backend.pipeline.prompts import entity_prompt, query_plan_prompt, query_prompt, summary_prompt, api_reasoning_prompt, query_necessity_prompt, general_answer_prompt, intent_splitting_prompt
+
+load_dotenv()
 
 BAD_RESPONSES = ["```", "json", "```json", "```cypher", "```cypher\n", "```", "cy", "pher"]
 
@@ -40,6 +43,8 @@ class LangChainPipeline:
         self.neo4j_connection = neo4j_connection
         self.neo4j_schema_text = neo4j_schema_text
         self.hmdb_client = hmdb_client
+        self.env_groq_api_key = os.getenv("GROQ_API_KEY")
+        self.env_groq_api_key_generation = os.getenv("GROQ_API_KEY_GENERATION")
 
         self.entity_parser = PydanticOutputParser(pydantic_object=EntityList)
         self.query_plan_parser = PydanticOutputParser(pydantic_object=QueryPlan)
@@ -51,7 +56,11 @@ class LangChainPipeline:
             intent_splitting_prompt,
             streaming=False,
             parser=None,
-            model_type="query"
+            model_type="query",
+            use_env_key=True,
+            custom_model="llama-3.1-8b-instant",
+            custom_temperature=0.1,
+            custom_max_tokens=1024
         )
         
         # PHASE 4: Add chain for query necessity detection
@@ -60,7 +69,11 @@ class LangChainPipeline:
             query_necessity_prompt,
             streaming=False,
             parser=None,
-            model_type="query"
+            model_type="query",
+            use_env_key=True,
+            custom_model="llama-3.1-8b-instant",
+            custom_temperature=0.1,
+            custom_max_tokens=1024
         )
         
         # Chain for direct answers to general questions
@@ -69,7 +82,11 @@ class LangChainPipeline:
             general_answer_prompt,
             streaming=True,
             parser=None,
-            model_type="summary"
+            model_type="summary",
+            use_env_key=True,
+            custom_model="llama-3.3-70b-versatile",
+            custom_temperature=0.7,
+            custom_max_tokens=8192
         )
 
         self.entity_chain = self._create_chain(
@@ -77,45 +94,85 @@ class LangChainPipeline:
             entity_prompt, 
             streaming=True, 
             parser=None,
-            model_type="query"
+            model_type="query",
+            use_env_key=True,
+            custom_model="qwen-2.5-32b",
+            custom_temperature=0.1,
+            custom_max_tokens=6000
         )
         self.query_plan_chain = self._create_chain(
             {"question": lambda x: x["question"], "entities": lambda x: x["entities"], "schema": lambda _: self.neo4j_schema_text}, 
             query_plan_prompt, 
             streaming=True, 
             parser=None,
-            model_type="query"
+            model_type="query",
+            use_env_key=True,
+            custom_model="qwen-2.5-32b",
+            custom_temperature=0.1,
+            custom_max_tokens=10000
         )
         self.query_chain = self._create_chain(
             {"query_plan": lambda x: x["query_plan"], "schema": lambda _: self.neo4j_schema_text}, 
             query_prompt, 
             streaming=True, 
             parser=None,
-            model_type="query"
+            model_type="query",
+            use_env_key=True,
+            custom_model="qwen-2.5-coder-32b",
+            custom_temperature=0.1,
+            custom_max_tokens=4096
         )
         self.summary_chain = self._create_chain(
             {"query_results": lambda x: x["query_results"], "question": lambda x: x["question"]}, 
             summary_prompt, 
             streaming=True, 
             parser=None,
-            model_type="summary"
+            model_type="summary",
+            use_env_key=True,
+            custom_model="meta-llama/llama-4-scout-17b-16e-instruct",
+            custom_temperature=0.7,
+            custom_max_tokens=4096
         )
         self.api_reasoning_chain = self._create_chain(
             {"api_data": lambda x: x["api_data"], "question": lambda x: x["question"]},
             api_reasoning_prompt,
             streaming=True,
             parser=None,
-            model_type="summary"
+            model_type="summary",
+            use_env_key=True,
+            custom_model="meta-llama/llama-4-scout-17b-16e-instruct",
+            custom_temperature=0.7,
+            custom_max_tokens=4096
         )
 
-    def _create_chain(self, assignment_funcs: dict, chain_prompt, streaming: bool, parser: Optional[PydanticOutputParser] = None, model_type: str = "query") -> RunnableSequence:
+    def _create_chain(self, assignment_funcs: dict, chain_prompt, streaming: bool, parser: Optional[PydanticOutputParser] = None, 
+                     model_type: str = "query", use_env_key: bool = False,
+                     custom_model: str = None, custom_temperature: float = None, custom_max_tokens: int = None) -> RunnableSequence:
         if self.llm_service.provider == "ollama":
             streaming = False
             
-        # if model_type == "summary":
-        #     self.llm_service.default_query_model = self.llm_service.default_summary_model
+        # Create a temporary LLM service with environment API key if needed
+        if use_env_key:
+            # Use GROQ_API_KEY_GENERATION for entity and query plan chains
+            api_key = self.env_groq_api_key_generation if model_type == "query" else self.env_groq_api_key
+            if api_key:
+                temp_llm_service = MultiLLMService(
+                    provider="groq",
+                    api_key=api_key,
+                    query_generator_model_name=custom_model or self.llm_service.default_query_model,
+                    query_summarizer_model=custom_model or self.llm_service.default_summary_model
+                )
+                llm = temp_llm_service.get_langchain_llm(
+                    streaming=streaming,
+                    temperature=custom_temperature if custom_temperature is not None else 0.2,
+                    max_tokens=custom_max_tokens if custom_max_tokens is not None else 2048
+                )
+            else:
+                llm = self.llm_service.get_langchain_llm(streaming=streaming)
+        else:
+            llm = self.llm_service.get_langchain_llm(streaming=streaming)
             
-        chain = RunnablePassthrough.assign(**assignment_funcs) | chain_prompt | self.llm_service.get_langchain_llm(streaming=streaming)
+        chain = RunnablePassthrough.assign(**assignment_funcs) | chain_prompt | llm
         
         if model_type == "summary":
             self.llm_service.default_query_model = self.llm_service.default_summary_model
@@ -310,7 +367,7 @@ class LangChainPipeline:
     
     # PHASE 3: Check if memory contains relevant raw data for reuse
     def _find_reusable_memory_data(self, memory_results: List[Dict], query_intent: str, 
-                                  confidence_threshold: float = 0.8) -> Tuple[bool, Optional[Dict]]:
+                                  confidence_threshold: float = 0.6) -> Tuple[bool, Optional[Dict]]:
         """
         Find memory entries with reusable raw_data.
         
@@ -521,7 +578,7 @@ class LangChainPipeline:
                 augmented_question = f"{user_question}\n\n" + "\n\n".join(extra_contexts)
             
             # 1) Entity Extraction
-            extraction_inputs = {"question": augmented_question, "schema": self.neo4j_schema_text}
+            extraction_inputs = {"question": user_question, "schema": self.neo4j_schema_text}
             extraction_accumulator: List[str] = []
             async for sse_message in self._stream_and_accumulate(self.entity_chain, "Extracting entities", extraction_inputs, extraction_accumulator):
                 yield sse_message
@@ -539,7 +596,7 @@ class LangChainPipeline:
                 payload = {}
                 
             # 2) Query Planning
-            planning_inputs = {"question": augmented_question, "entities": full_extraction_response, "schema": self.neo4j_schema_text}
+            planning_inputs = {"question": user_question, "entities": full_extraction_response, "schema": self.neo4j_schema_text}
             planning_accumulator: List[str] = []
             async for sse_message in self._stream_and_accumulate(self.query_plan_chain, "Query planning", planning_inputs, planning_accumulator):
                 yield sse_message
