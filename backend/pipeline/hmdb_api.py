@@ -18,6 +18,147 @@ load_dotenv()
 # if a request was made less than an hour ago, the cached result will be returned instead of making a new API call.
 #The TTL (Time-to-Live) is working correctly and will delete expired entries after 1 hour.
 
+# Comprehensive mapping of HMDB API endpoints to their returned fields
+# This map is used to intelligently route requests to the appropriate endpoint
+# based on what fields are needed, avoiding unnecessary or overly broad data fetching
+endpoint_map = {
+    # Main metabolite info endpoint - provides core metabolite data
+    "metabolites": [
+        "hmdb_id", "status", "created_at", "updated_at", "name", "description", 
+        "synonyms", "moldb_formula", "cas", "moldb_average_mass", "moldb_mono_mass", 
+        "moldb_smiles", "moldb_inchi", "moldb_inchikey", "chemical_taxonomy", 
+        "moldb_alogps_solubility", "moldb_alogps_logp", "moldb_alogps_logs", 
+        "moldb_pka_strongest_acidic", "moldb_pka_strongest_basic", 
+        "moldb_physiological_charge", "moldb_acceptor_count", "moldb_donor_count", 
+        "moldb_polar_surface_area", "moldb_rotatable_bond_count", "moldb_refractivity", 
+        "moldb_polarizability", "retention_indices", "biospecimen_normal", "biospecimen_abnormal",
+        "external_links", "synthesis_reference", "general_references"
+    ],
+    
+    # Concentration data endpoint
+    "concentrations": [
+        "normal_concentrations", "abnormal_concentrations", "biospecimen", "status", 
+        "condition", "value", "age", "sex", "publications"
+    ],
+    
+    # Enzyme data endpoint
+    "enzymes": [
+        "enzyme", "uniprot_id", "enzyme_id", "enzyme_name", "gene_name", "protein_name", 
+        "genecard_id", "theoretical_pi", "molecular_weight", "num_residues", "reactions"
+    ],
+    
+    # Ontology information
+    "ontology": [
+        "hmdb_id", "status", "created_at", "updated_at", "name", "moldb_formula", 
+        "moldb_smiles", "functional_ontology"
+    ],
+    
+    # Detailed health effect ontology
+    "ontology/effect/health": [
+        "health_effect", "physiological_effect", "name", "category", "description", 
+        "source_id", "external_source", "role_type"
+    ],
+    
+    # Detailed organoleptic effect ontology
+    "ontology/effect/organoleptic": [
+        "organoleptic_effect", "name", "category", "description", "source_id", 
+        "external_source", "role_type"
+    ],
+    
+    # Detailed disposition route ontology
+    "ontology/disposition/route": [
+        "disposition", "route", "name", "source_id"
+    ],
+    
+    # Detailed disposition source ontology
+    "ontology/disposition/source": [
+        "disposition", "source", "name", "category", "external_source", "source_id"
+    ],
+    
+    # Detailed disposition location ontology
+    "ontology/disposition/location": [
+        "disposition", "biological_location", "name", "source_id"
+    ],
+    
+    # Detailed natural process ontology
+    "ontology/process/natural": [
+        "process", "natural_process", "name", "category", "source_id", "external_source",
+        "role_type", "description"
+    ],
+    
+    # Detailed industrial process ontology
+    "ontology/process/industrial": [
+        "process", "industrial_process", "name", "category", "source_id", "external_source",
+        "role_type", "description"
+    ],
+    
+    # Detailed environmental role ontology
+    "ontology/role/environmental": [
+        "role", "environmental_role", "name", "category", "source_id", "external_source",
+        "role_type", "description"
+    ],
+    
+    # Detailed biological role ontology
+    "ontology/role/biological": [
+        "role", "biological_role", "name", "category", "description", "source_id", 
+        "external_source", "role_type", "external_sources"
+    ],
+    
+    # Detailed indirect role ontology
+    "ontology/role/indirect": [
+        "role", "indirect_effect", "name", "category", "source_id", "external_source",
+        "role_type", "description", "external_sources"
+    ],
+    
+    # Detailed industrial role ontology
+    "ontology/role/industrial": [
+        "role", "industrial_application", "name", "category", "source_id", "external_source",
+        "role_type", "description", "external_sources"
+    ],
+    
+    # Detailed biomarker role ontology
+    "ontology/role/biomarker": [
+        "role", "biomarker", "name", "source_id", "category", "role_type", "description",
+        "external_sources"
+    ],
+    
+    # Metabolic pathway information
+    "pathways": [
+        "smpdb_id", "name", "associated_proteins"
+    ],
+    
+    # Spectral data endpoint
+    "spectra": [
+        "nmr_spectra", "ms_spectra", "nmr_type", "sample_concentration", "solvent", 
+        "sample_mass", "sample_assessment", "spectra_assessment", "instrument_type", 
+        "nucleus", "frequency", "sample_ph", "sample_temperature", "chemical_shift_reference", 
+        "peaks", "ppm", "intensity", "references"
+    ],
+    
+    # Ion search endpoint
+    "ion": [
+        "hmdb_id", "name", "status", "moldb_inchi", "moldb_inchikey", "moldb_smiles", 
+        "synonyms", "biospecimen_normal", "biospecimen_abnormal", "publications"
+    ],
+    
+    # Paginated metabolites list
+    "metabolites/page": [
+        "hmdb_id", "name", "status", "chemical_formula", "average_molecular_weight", 
+        "monisotopic_molecular_weight", "iupac_name", "traditional_iupac", "cas_registry_number", 
+        "smiles", "inchi", "inchikey", "kingdom", "super_class", "class", "sub_class", 
+        "direct_parent", "molecular_framework", "role", "state", "cellular_locations", 
+        "biospecimen_locations", "tissue_locations", "normal_concentrations", "disease_associations", 
+        "pathway_associations", "source", "chemspider_id", "drugbank_id", "pubchem_compound_id",
+        "next_page", "total_page", "biospecimen_location"
+    ],
+    
+    # Search endpoint for metabolite lookup
+    "search": [
+        "hmdb_id", "name", "status", "moldb_inchi", "moldb_inchikey", "moldb_smiles", 
+        "synonyms", "biospecimen_normal", "biospecimen_abnormal", "publications"
+    ]
+}
+
 
 class RateLimiter:
     def __init__(self):
