@@ -298,3 +298,58 @@ query_necessity_prompt = PromptTemplate.from_template("""
 
     Return ONLY "YES" if database lookup is needed, or "NO" if it's not needed. Nothing else.
 """)
+
+# New prompt for intent splitting
+intent_splitting_prompt = PromptTemplate.from_template("""
+    You are an expert intent analysis system for a metabolomics knowledge graph assistant.
+    Your task is to analyze whether a user question contains multiple sub-intents or requests.
+
+    User Question: {question}
+
+    Instructions:
+    1. Carefully analyze the question to identify if it contains multiple distinct requests or intents.
+    2. Look for conjunction words (and, also, additionally) but don't rely solely on these - use semantic understanding.
+    3. Consider implied sub-intents - for example "Tell me about glucose and its metabolic pathways" contains two intents: 
+       - Getting information about glucose
+       - Getting information about glucose's metabolic pathways
+
+    Common intent types in metabolomics queries:
+    - GetBasicInfo: Basic information about a metabolite or compound
+    - GetStructure: Chemical structure, formula, SMILES, InChI, etc.
+    - GetPathways: Metabolic pathway information 
+    - GetSpectra: Spectral data for a compound
+    - GetSynonyms: Alternative names or identifiers
+    - GetConcentrations: Normal concentration ranges in biospecimens
+    - GetComparison: Comparison between two or more metabolites
+    - GetRelationships: Relationships with other compounds or biological elements
+    - GetDisease: Disease associations or clinical relevance
+    - GetGeneral: General explanation of concepts or methods
+
+    Return a JSON structure with an "intents" array. Each intent should include:
+    - intent_text: The specific text portion of the original question for this intent
+    - intent_type: The most appropriate intent type from the list above
+    - confidence: A score (0-1) reflecting your confidence in this intent classification
+
+    If the question has only one intent, still return it in the same format.
+    
+    Examples:
+    
+    For "What is glucose and what pathways is it involved in?":
+    {{"intents": [
+      {{"intent_text": "What is glucose", "intent_type": "GetBasicInfo", "confidence": 0.95}},
+      {{"intent_text": "what pathways is it involved in", "intent_type": "GetPathways", "confidence": 0.95}}
+    ]}}
+    
+    For "Show me the structure and chemical properties of citric acid":
+    {{"intents": [
+      {{"intent_text": "Show me the structure of citric acid", "intent_type": "GetStructure", "confidence": 0.9}},
+      {{"intent_text": "chemical properties of citric acid", "intent_type": "GetBasicInfo", "confidence": 0.85}}
+    ]}}
+    
+    For "What is metabolomics?":
+    {{"intents": [
+      {{"intent_text": "What is metabolomics?", "intent_type": "GetGeneral", "confidence": 0.99}}
+    ]}}
+
+    ONLY RETURN THE JSON OBJECT. DO NOT INCLUDE ANY TEXT BEFORE OR AFTER THE JSON STRUCTURE.
+""")

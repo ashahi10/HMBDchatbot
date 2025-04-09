@@ -8,7 +8,7 @@ from langchain_core.output_parsers import StrOutputParser, PydanticOutputParser
 from pydantic import BaseModel, Field
 
 from backend.services.llm_service import MultiLLMService
-from backend.pipeline.prompts import entity_prompt, query_plan_prompt, query_prompt, summary_prompt, api_reasoning_prompt, query_necessity_prompt, general_answer_prompt
+from backend.pipeline.prompts import entity_prompt, query_plan_prompt, query_prompt, summary_prompt, api_reasoning_prompt, query_necessity_prompt, general_answer_prompt, intent_splitting_prompt
 
 BAD_RESPONSES = ["```", "json", "```json", "```cypher", "```cypher\n", "```", "cy", "pher"]
 
@@ -19,6 +19,14 @@ class Entity(BaseModel):
 
 class EntityList(BaseModel):
     entities: List[Entity] = Field(..., description="List of extracted entities")
+
+class Intent(BaseModel):
+    intent_text: str = Field(..., description="The specific text portion of the original question for this intent")
+    intent_type: str = Field(..., description="The intent category")
+    confidence: float = Field(..., description="Confidence score (0-1)")
+
+class IntentList(BaseModel):
+    intents: List[Intent] = Field(..., description="List of extracted intents")
 
 class QueryPlan(BaseModel):
     entities: List[Entity] = Field(..., description="List of extracted entities")
@@ -35,6 +43,16 @@ class LangChainPipeline:
 
         self.entity_parser = PydanticOutputParser(pydantic_object=EntityList)
         self.query_plan_parser = PydanticOutputParser(pydantic_object=QueryPlan)
+        self.intent_parser = PydanticOutputParser(pydantic_object=IntentList)
+        
+        # Add intent splitting chain for multi-intent detection
+        self.intent_splitting_chain = self._create_chain(
+            {"question": lambda x: x["question"]},
+            intent_splitting_prompt,
+            streaming=False,
+            parser=None,
+            model_type="query"
+        )
         
         # PHASE 4: Add chain for query necessity detection
         self.query_necessity_chain = self._create_chain(
@@ -198,18 +216,69 @@ class LangChainPipeline:
             
             # Clean the result and extract the YES/NO decision
             result = result.strip().upper()
-            if "YES" in result:
-                return True
-            elif "NO" in result:
-                return False
-            else:
-                # Default to True if unclear (safer to query than miss information)
-                return True
+            
+            return "YES" in result
         except Exception as e:
-            print(f"Error in query necessity detection: {e}")
-            # Default to True on error (fallback to safety)
+            print(f"Error in query necessity decision: {e}")
+            # Default to True (safer to query than not)
             return True
-    
+            
+    # PHASE 1: Add method to identify multiple intents in a question
+    async def _split_intents(self, question: str) -> List[Intent]:
+        """
+        Use the LLM to identify multiple intents in a question.
+        
+        Args:
+            question: The user's question
+            
+        Returns:
+            List[Intent]: A list of Intent objects, each with intent_text, intent_type, and confidence
+        """
+        try:
+            # Get intents from LLM
+            inputs = {"question": question}
+            result = await self.intent_splitting_chain.ainvoke(inputs)
+            
+            # Parse the result as JSON
+            try:
+                # Clean the result if it contains markdown code blocks
+                cleaned_result = result
+                for bad_prefix in BAD_RESPONSES:
+                    if cleaned_result.startswith(bad_prefix):
+                        cleaned_result = cleaned_result[len(bad_prefix):].strip()
+                for bad_suffix in ["`", "```"]:
+                    if cleaned_result.endswith(bad_suffix):
+                        cleaned_result = cleaned_result[:-len(bad_suffix)].strip()
+                
+                # Parse the JSON result
+                intents_data = json.loads(cleaned_result)
+                
+                # Validate the structure
+                if "intents" not in intents_data or not isinstance(intents_data["intents"], list):
+                    print(f"Invalid intent structure, falling back to single intent: {cleaned_result}")
+                    return [Intent(intent_text=question, intent_type="GetBasicInfo", confidence=1.0)]
+                
+                # Convert dict to Intent objects
+                intents = []
+                for intent_dict in intents_data["intents"]:
+                    intent = Intent(
+                        intent_text=intent_dict.get("intent_text", ""),
+                        intent_type=intent_dict.get("intent_type", "GetBasicInfo"),
+                        confidence=intent_dict.get("confidence", 1.0)
+                    )
+                    intents.append(intent)
+                
+                return intents
+            except (json.JSONDecodeError, ValueError) as e:
+                print(f"Error parsing intent JSON: {e}")
+                print(f"Raw result: {result}")
+                # Fall back to treating as a single intent
+                return [Intent(intent_text=question, intent_type="GetBasicInfo", confidence=1.0)]
+        except Exception as e:
+            print(f"Error in intent splitting: {e}")
+            # Default to treating as a single intent
+            return [Intent(intent_text=question, intent_type="GetBasicInfo", confidence=1.0)]
+
     # PHASE 3: Add method to process raw data from memory for reuse
     def _process_memory_raw_data(self, memory_entry: Dict, query_intent: str) -> Dict:
         """
@@ -289,6 +358,22 @@ class LangChainPipeline:
                 for match in matches:
                     if len(match) > 2:  # Avoid single letters
                         current_entities.add(match.lower())
+            
+            # PHASE 1: Add intent splitting early in the process
+            # Analyze the question to identify if it contains multiple intents
+            intents = await self._split_intents(user_question)
+            has_multiple_intents = len(intents) > 1
+            
+            # Store the detected intents as an attribute for future phases
+            self.current_intents = intents
+            
+            # Log the detected intents
+            if has_multiple_intents:
+                intent_info = ", ".join([f"'{intent.intent_text}' ({intent.intent_type})" for intent in intents])
+                yield self._format_message("Thinking", f"Your question contains multiple parts: {intent_info}")
+                print(f"\n[DEBUG] Multiple intents detected: {intent_info}")
+            else:
+                print(f"\n[DEBUG] Single intent detected: {intents[0].intent_type}")
             
             # PHASE 4: Add early exit for questions not requiring database lookup
             should_query = await self._should_query_llm_decision(user_question)
