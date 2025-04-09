@@ -10,7 +10,7 @@ from langchain_core.output_parsers import StrOutputParser, PydanticOutputParser
 from pydantic import BaseModel, Field
 
 from backend.services.llm_service import MultiLLMService
-from backend.pipeline.prompts import entity_prompt, query_plan_prompt, query_prompt, summary_prompt, api_reasoning_prompt, query_necessity_prompt, general_answer_prompt, intent_splitting_prompt
+from backend.pipeline.prompts import entity_prompt, query_plan_prompt, query_prompt, summary_prompt, api_reasoning_prompt, query_necessity_prompt, general_answer_prompt, intent_splitting_prompt, aggregator_prompt
 
 load_dotenv()
 
@@ -75,6 +75,19 @@ class LangChainPipeline:
             custom_model="llama-3.1-8b-instant",
             custom_temperature=0.1,
             custom_max_tokens=1024
+        )
+        
+        # PHASE 4: Add aggregator chain for combining multiple sub-intent results
+        self.aggregator_chain = self._create_chain(
+            {"question": lambda x: x["question"], "sub_intent_results": lambda x: x["sub_intent_results"]},
+            aggregator_prompt,
+            streaming=True,
+            parser=None,
+            model_type="summary",
+            use_env_key=True,
+            custom_model="meta-llama/llama-4-scout-17b-16e-instruct",
+            custom_temperature=0.7,
+            custom_max_tokens=8192
         )
         
         # Chain for direct answers to general questions
@@ -435,7 +448,8 @@ class LangChainPipeline:
                 "neo4j_results": None,
                 "api_data": None,
                 "query_plan": None,
-                "error": None
+                "error": None,
+                "original_question": user_question  # Add original question for the aggregator
             }
             
             # Use the sub-intent text as the specific question for this branch
@@ -744,9 +758,9 @@ class LangChainPipeline:
                 "error": str(e)
             }
 
-    def _combine_sub_intent_results(self, results: List[Dict]) -> str:
+    async def _combine_sub_intent_results(self, results: List[Dict]) -> str:
         """
-        Combine results from multiple sub-intents into a coherent response.
+        Combine results from multiple sub-intents into a coherent response using the intelligent aggregator.
         
         Args:
             results: List of result dictionaries from processed sub-intents
@@ -761,11 +775,9 @@ class LangChainPipeline:
         if len(results) == 1:
             return "".join(results[0].get("text_accumulator", []))
         
-        # Multiple results need to be combined coherently
+        # For multiple results, format them for the aggregator
         combined_parts = []
-        
-        # Add a header for the combined response
-        combined_parts.append("Here's the information you asked for:")
+        formatted_results = []
         
         # Process each sub-intent result
         for idx, result in enumerate(results):
@@ -777,21 +789,71 @@ class LangChainPipeline:
             if text_accumulator and len(text_accumulator) > 0:
                 text = "".join(text_accumulator)
             elif error:
-                text = f"I encountered an error while processing this part: {error}"
+                text = f"ERROR: {error}"
             else:
                 text = "No information found for this part."
             
-            # Create a header for this sub-intent
+            # Create a formatted version with header for the aggregator input
             if intent:
-                header = f"\n\n## {intent.intent_type}: {intent.intent_text}"
+                header = f"SUB-INTENT {idx+1}: {intent.intent_type} - {intent.intent_text}"
             else:
-                header = f"\n\n## Part {idx + 1}"
+                header = f"SUB-INTENT {idx+1}"
             
-            # Add this section
-            combined_parts.append(f"{header}\n{text}")
+            formatted_results.append(f"{header}\n{text}\n")
         
-        # Combine all parts
-        return "\n".join(combined_parts)
+        # Combine all formatted results for the aggregator
+        sub_intent_results_text = "\n".join(formatted_results)
+        
+        # Get the original question from the first result
+        question = results[0].get("original_question", "")
+        
+        try:
+            # Use the aggregator chain to create an intelligently combined response
+            aggregator_inputs = {
+                "question": question,
+                "sub_intent_results": sub_intent_results_text
+            }
+            
+            # Process the aggregation
+            aggregated_response = ""
+            async for chunk in self.aggregator_chain.astream(aggregator_inputs):
+                if chunk:
+                    aggregated_response += chunk if isinstance(chunk, str) else str(chunk)
+            
+            # Return the aggregated response
+            return aggregated_response
+            
+        except Exception as e:
+            print(f"[ERROR] Aggregator chain failed: {e}")
+            
+            # Fallback to the simpler combination method if aggregator fails
+            for idx, result in enumerate(results):
+                intent = result.get("intent")
+                text_accumulator = result.get("text_accumulator", [])
+                error = result.get("error")
+                
+                # Get the text from the accumulator or an error message
+                if text_accumulator and len(text_accumulator) > 0:
+                    text = "".join(text_accumulator)
+                elif error:
+                    text = f"I encountered an error while processing this part: {error}"
+                else:
+                    text = "No information found for this part."
+                
+                # Create a header for this sub-intent
+                if intent:
+                    header = f"\n\n## {intent.intent_type}: {intent.intent_text}"
+                else:
+                    header = f"\n\n## Part {idx + 1}"
+                
+                # Add this section
+                combined_parts.append(f"{header}\n{text}")
+            
+            # Add a header for the combined response
+            combined_parts.insert(0, "Here's the information you asked for:")
+            
+            # Combine all parts
+            return "\n".join(combined_parts)
 
     async def run_pipeline(self, user_question: str, conversation_history: List = None, relevant_history: List = None) -> AsyncGenerator[str, None]:
         try:
@@ -1047,7 +1109,7 @@ class LangChainPipeline:
                             processed_results.append(result)
                     
                     # 3) Combine results from all sub-intents
-                    combined_answer = self._combine_sub_intent_results(processed_results)
+                    combined_answer = await self._combine_sub_intent_results(processed_results)
                     
                     # 4) Return the combined answer
                     yield self._format_message("Answer", combined_answer)

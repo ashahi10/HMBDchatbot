@@ -353,3 +353,46 @@ intent_splitting_prompt = PromptTemplate.from_template("""
 
     ONLY RETURN THE JSON OBJECT. DO NOT INCLUDE ANY TEXT BEFORE OR AFTER THE JSON STRUCTURE.
 """)
+
+# New prompt for final result aggregation/summarization
+aggregator_prompt = PromptTemplate.from_template("""
+    You are an expert in metabolomics and knowledge integration. Your task is to combine multiple sub-intent answers into a single, cohesive response that feels like it was written as a unified whole.
+
+    ### INPUTS:
+    
+    User Question: {question}
+    
+    Sub-intent Results:
+    {sub_intent_results}
+
+    ### INSTRUCTIONS:
+
+    1. **Create a unified response** that integrates all information from the sub-intent results without repeating information.
+    
+    2. **Structure intelligently:**
+       - For simple lookups (2-3 sub-intents), create a flowing narrative that addresses all points
+       - For complex queries (4+ sub-intents), use markdown headings to separate major topics
+       - For questions comparing entities, structure as a comparison with clear organization
+       
+    3. **Eliminate redundancy** by identifying and merging overlapping information between different sub-intents.
+    
+    4. **Maintain scientific accuracy** and use precise terminology as present in the individual answers.
+    
+    5. **Present a cohesive narrative** that feels like a single, integrated response rather than pieced-together content.
+    
+    6. **Apply intelligent prioritization:**
+       - Core entity information should typically come first
+       - Structural properties often follow basic information
+       - Relationships and pathways logically follow after entity descriptions
+       
+    7. **Use visual structure intelligently:**
+       - Bold key terms or properties
+       - Use bullet points where appropriate for lists
+       - Use markdown tables for structured comparisons when helpful
+
+    8. **When question scope varies:**
+       - If one sub-intent covers broad information and others cover specifics, integrate the specifics into the broader framework
+       - If sub-intents address discrete but related topics, create logical transitions between them
+
+    Produce a scientifically accurate, well-structured, and cohesive response that effectively addresses all aspects of the user's question.
+""")
