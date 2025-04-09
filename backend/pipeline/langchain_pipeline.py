@@ -3,6 +3,7 @@ from typing import List, AsyncGenerator, Optional, Any, Dict, Tuple, Union, Set
 import re
 import os
 from dotenv import load_dotenv
+import asyncio
 
 from langchain_core.runnables import RunnableSequence, RunnablePassthrough
 from langchain_core.output_parsers import StrOutputParser, PydanticOutputParser
@@ -300,12 +301,23 @@ class LangChainPipeline:
             try:
                 # Clean the result if it contains markdown code blocks
                 cleaned_result = result
-                for bad_prefix in BAD_RESPONSES:
-                    if cleaned_result.startswith(bad_prefix):
-                        cleaned_result = cleaned_result[len(bad_prefix):].strip()
-                for bad_suffix in ["`", "```"]:
-                    if cleaned_result.endswith(bad_suffix):
-                        cleaned_result = cleaned_result[:-len(bad_suffix)].strip()
+                
+                # Handle markdown code blocks
+                if "```json" in cleaned_result or "```" in cleaned_result:
+                    # Extract content between code blocks if present
+                    import re
+                    json_match = re.search(r'```(?:json)?\s*([\s\S]*?)```', cleaned_result)
+                    if json_match:
+                        cleaned_result = json_match.group(1).strip()
+                    else:
+                        # Remove prefix markdown indicators
+                        for bad_prefix in BAD_RESPONSES:
+                            if cleaned_result.startswith(bad_prefix):
+                                cleaned_result = cleaned_result[len(bad_prefix):].strip()
+                        # Remove suffix markdown indicators
+                        for bad_suffix in ["`", "```"]:
+                            if cleaned_result.endswith(bad_suffix):
+                                cleaned_result = cleaned_result[:-len(bad_suffix)].strip()
                 
                 # Parse the JSON result
                 intents_data = json.loads(cleaned_result)
@@ -393,6 +405,393 @@ class LangChainPipeline:
                     return True, processed_data
                     
         return False, None
+
+    async def _process_sub_intent(self, intent: Intent, user_question: str, 
+                               conversation_history: List = None, 
+                               relevant_history: List = None,
+                               entity_extraction_results: Dict = None) -> Dict[str, Any]:
+        """
+        Process a single sub-intent and return its results.
+        
+        Args:
+            intent: The Intent object to process
+            user_question: The original user question
+            conversation_history: List of recent conversation turns
+            relevant_history: List of relevant memory entries
+            entity_extraction_results: Optional pre-extracted entities to reuse
+            
+        Returns:
+            Dict containing the processing results for this sub-intent
+        """
+        try:
+            print(f"\n[DEBUG] Processing sub-intent: {intent.intent_type} - '{intent.intent_text}'")
+            
+            # Initialize result container
+            intent_results = {
+                "intent": intent,
+                "text_accumulator": [],
+                "section": "Answer",
+                "entities": [],
+                "neo4j_results": None,
+                "api_data": None,
+                "query_plan": None,
+                "error": None
+            }
+            
+            # Use the sub-intent text as the specific question for this branch
+            sub_question = intent.intent_text
+            
+            # 1) Entity Extraction (reuse if already done or do it for this sub-intent)
+            full_extraction_response = None
+            entities = None
+            
+            if entity_extraction_results:
+                # Reuse entities from main question if they're already extracted
+                full_extraction_response = entity_extraction_results.get("full_extraction_response")
+                entities = entity_extraction_results.get("entities")
+            else:
+                # Perform entity extraction for this sub-intent
+                extraction_inputs = {"question": sub_question, "schema": self.neo4j_schema_text}
+                extraction_accumulator: List[str] = []
+                
+                # Stream entity extraction (only for internal processing)
+                async for _ in self._stream_and_accumulate(
+                    self.entity_chain, 
+                    "Extracting entities", 
+                    extraction_inputs, 
+                    extraction_accumulator
+                ):
+                    pass  # We don't yield these messages, just accumulate
+                
+                full_extraction_response = "".join(extraction_accumulator)
+                entities = self.entity_parser.parse(full_extraction_response)
+            
+            # Store entity results
+            intent_results["entities"] = entities
+            intent_results["full_extraction_response"] = full_extraction_response
+            
+            # Extract metabolites for potential API lookup
+            metabolites = [ent.name for ent in entities.entities if ent.type == "Metabolite"]
+            first_metabolite = metabolites[0] if metabolites else None
+            
+            # 2) Query Planning
+            planning_inputs = {
+                "question": sub_question, 
+                "entities": full_extraction_response, 
+                "schema": self.neo4j_schema_text
+            }
+            planning_accumulator: List[str] = []
+            
+            # Stream query planning (only for internal processing)
+            async for _ in self._stream_and_accumulate(
+                self.query_plan_chain, 
+                "Query planning", 
+                planning_inputs, 
+                planning_accumulator
+            ):
+                pass  # We don't yield these messages, just accumulate
+            
+            full_query_plan_response = "".join(planning_accumulator)
+            query_plan = self.query_plan_parser.parse(full_query_plan_response)
+            
+            # Store query plan
+            intent_results["query_plan"] = query_plan
+            
+            # 3) Execute query if needed
+            if query_plan.should_query:
+                # Check memory for reusable data first
+                memory_raw_data = None
+                used_memory_data = False
+                
+                if relevant_history:
+                    # Check if any relevant memory entry has reusable raw_data
+                    has_reusable_data, memory_raw_data = self._find_reusable_memory_data(
+                        relevant_history, 
+                        query_plan.query_intent
+                    )
+                    used_memory_data = has_reusable_data and memory_raw_data
+                
+                # Skip query execution if we have memory data
+                neo4j_results = None
+                
+                if not used_memory_data:
+                    # Generate and execute query
+                    query_inputs = {"query_plan": query_plan, "schema": self.neo4j_schema_text}
+                    query_accumulator: List[str] = []
+                    
+                    # Stream query generation (only for internal processing)
+                    async for _ in self._stream_and_accumulate(
+                        self.query_chain, 
+                        "Query execution", 
+                        query_inputs, 
+                        query_accumulator
+                    ):
+                        pass  # We don't yield these messages, just accumulate
+                        
+                    full_query_response = "".join(query_accumulator)
+                    
+                    try:
+                        # Execute Neo4j query
+                        neo4j_results = self.neo4j_connection.run_query(full_query_response)
+                        intent_results["neo4j_results"] = neo4j_results
+                        
+                        # Check if we need fallback to API
+                        should_fallback = analyze_missing_fields(sub_question, neo4j_results)
+                        if not neo4j_results or neo4j_results == [None] or neo4j_results == [""]:
+                            should_fallback = True
+                        
+                        # Get additional description results if needed
+                        for metabolite in metabolites:
+                            more_results = self.neo4j_connection.run_query(f"""
+                                MATCH (m:Metabolite)
+                                WHERE toLower(m.name) = toLower('{metabolite}')
+                                OR EXISTS {{ MATCH (m)-[:HAS_SYNONYM]->(s:Synonym) 
+                                            WHERE toLower(s.synonymText) = toLower('{metabolite}') }}
+                                RETURN m.description
+                            """)
+                            if more_results:
+                                neo4j_results += more_results
+                                intent_results["neo4j_results"] = neo4j_results
+                        
+                        # Handle fallback to HMDB API if needed
+                        if should_fallback and len(metabolites) > 0 and self.hmdb_client:
+                            first_metabolite = metabolites[0]
+                            fallback_data = None
+                            
+                            # Make API call based on ID or name
+                            if first_metabolite.startswith("HMDB"):
+                                payload = {"hmdb_id": [first_metabolite]}
+                                fallback_data = self.hmdb_client.post("metabolites", payload)
+                            else:
+                                payload = {"name": first_metabolite}
+                                fallback_data = self.hmdb_client.post("metabolites/search", payload)
+                            
+                            # Process API response
+                            if fallback_data and "found" in fallback_data:
+                                filtered_fallback_data = self._filter_hmdb_response(fallback_data)
+                                intent_results["api_data"] = filtered_fallback_data
+                                
+                                # Run API reasoning chain
+                                api_reasoning_inputs = {
+                                    "api_data": filtered_fallback_data,
+                                    "question": sub_question
+                                }
+                                api_reasoning_accumulator: List[str] = []
+                                
+                                # Stream API reasoning (only for internal processing)
+                                async for _ in self._stream_and_accumulate(
+                                    self.api_reasoning_chain,
+                                    "API Summary",
+                                    api_reasoning_inputs,
+                                    api_reasoning_accumulator
+                                ):
+                                    pass  # We don't yield these messages, just accumulate
+                                
+                                # Store API reasoning results
+                                api_summary = "".join(api_reasoning_accumulator)
+                                intent_results["api_summary"] = api_summary
+                                
+                                # If we have Neo4j results, run DB summary chain too
+                                if neo4j_results and not should_fallback:
+                                    summary_inputs = {
+                                        "query_results": neo4j_results,
+                                        "question": sub_question
+                                    }
+                                    summary_accumulator: List[str] = []
+                                    
+                                    # Stream DB summary (only for internal processing)
+                                    async for _ in self._stream_and_accumulate(
+                                        self.summary_chain,
+                                        "DB Summary",
+                                        summary_inputs,
+                                        summary_accumulator
+                                    ):
+                                        pass  # We don't yield these messages, just accumulate
+                                    
+                                    # Store DB summary results
+                                    db_summary = "".join(summary_accumulator)
+                                    intent_results["db_summary"] = db_summary
+                                    
+                                    # Merge both summaries
+                                    final_summary = self._merge_summaries(db_summary, api_summary)
+                                    intent_results["text_accumulator"].append(final_summary)
+                                else:
+                                    # If no Neo4j results, just use API summary
+                                    intent_results["text_accumulator"].append(api_summary)
+                            else:
+                                intent_results["error"] = "No data found in HMDB API response"
+                        
+                        # If no fallback needed or fallback failed, use Neo4j results
+                        elif neo4j_results and neo4j_results != [None] and neo4j_results != [""]:
+                            summary_inputs = {
+                                "query_results": neo4j_results,
+                                "question": sub_question
+                            }
+                            summary_accumulator: List[str] = []
+                            
+                            # Stream DB summary (only for internal processing)
+                            async for _ in self._stream_and_accumulate(
+                                self.summary_chain,
+                                "Answer",
+                                summary_inputs,
+                                summary_accumulator
+                            ):
+                                pass  # We don't yield these messages, just accumulate
+                            
+                            # Store summary
+                            summary = "".join(summary_accumulator)
+                            intent_results["db_summary"] = summary
+                            intent_results["text_accumulator"].append(summary)
+                        else:
+                            intent_results["error"] = "No results found in database"
+                            intent_results["text_accumulator"].append("I couldn't find the information you're looking for in our database.")
+                    
+                    except Exception as e:
+                        intent_results["error"] = f"Neo4j query execution failed: {e}"
+                        intent_results["text_accumulator"].append("I encountered an error while querying the database.")
+                
+                # Use memory data if available
+                elif used_memory_data:
+                    # Process based on what raw data we have
+                    if "neo4j_results" in memory_raw_data and memory_raw_data["neo4j_results"]:
+                        # Use memory's Neo4j results
+                        summary_inputs = {
+                            "query_results": memory_raw_data["neo4j_results"],
+                            "question": sub_question
+                        }
+                        summary_accumulator: List[str] = []
+                        
+                        # Stream DB summary (only for internal processing) 
+                        async for _ in self._stream_and_accumulate(
+                            self.summary_chain,
+                            "DB Summary", 
+                            summary_inputs,
+                            summary_accumulator
+                        ):
+                            pass  # We don't yield these messages, just accumulate
+                        
+                        # Store DB summary
+                        db_summary = "".join(summary_accumulator)
+                        intent_results["db_summary"] = db_summary
+                        
+                        # If we also have API data, use it too
+                        api_summary = ""
+                        if "api_data" in memory_raw_data and memory_raw_data["api_data"]:
+                            api_reasoning_inputs = {
+                                "api_data": memory_raw_data["api_data"],
+                                "question": sub_question
+                            }
+                            api_reasoning_accumulator: List[str] = []
+                            
+                            # Stream API reasoning (only for internal processing)
+                            async for _ in self._stream_and_accumulate(
+                                self.api_reasoning_chain,
+                                "API Summary",
+                                api_reasoning_inputs,
+                                api_reasoning_accumulator
+                            ):
+                                pass  # We don't yield these messages, just accumulate
+                            
+                            # Store API summary
+                            api_summary = "".join(api_reasoning_accumulator)
+                            intent_results["api_summary"] = api_summary
+                        
+                        # Merge both summaries if we have API data
+                        if api_summary:
+                            final_summary = self._merge_summaries(db_summary, api_summary)
+                            intent_results["text_accumulator"].append(final_summary)
+                        else:
+                            intent_results["text_accumulator"].append(db_summary)
+                    
+                    elif "api_data" in memory_raw_data and memory_raw_data["api_data"]:
+                        # Only have API data from memory
+                        api_reasoning_inputs = {
+                            "api_data": memory_raw_data["api_data"],
+                            "question": sub_question
+                        }
+                        api_reasoning_accumulator: List[str] = []
+                        
+                        # Stream API reasoning (only for internal processing)
+                        async for _ in self._stream_and_accumulate(
+                            self.api_reasoning_chain,
+                            "API Summary",
+                            api_reasoning_inputs,
+                            api_reasoning_accumulator
+                        ):
+                            pass  # We don't yield these messages, just accumulate
+                        
+                        # Store API summary
+                        api_summary = "".join(api_reasoning_accumulator)
+                        intent_results["api_summary"] = api_summary
+                        intent_results["text_accumulator"].append(api_summary)
+                    else:
+                        # No usable data in memory after all
+                        intent_results["error"] = "Memory data could not be used"
+            else:
+                # No database query needed
+                intent_results["text_accumulator"].append(f"No database query needed for this part. {query_plan.reasoning}")
+            
+            # Return the results for this sub-intent
+            return intent_results
+        
+        except Exception as e:
+            # Handle any errors in the sub-intent processing
+            print(f"\n[ERROR] Error processing sub-intent '{intent.intent_type}': {str(e)}")
+            return {
+                "intent": intent,
+                "text_accumulator": [f"Error processing this part of your question: {str(e)}"],
+                "section": "Error",
+                "error": str(e)
+            }
+
+    def _combine_sub_intent_results(self, results: List[Dict]) -> str:
+        """
+        Combine results from multiple sub-intents into a coherent response.
+        
+        Args:
+            results: List of result dictionaries from processed sub-intents
+            
+        Returns:
+            Combined text to present to the user
+        """
+        if not results:
+            return "I couldn't process your question. Please try again."
+        
+        # If only one result, just return its text
+        if len(results) == 1:
+            return "".join(results[0].get("text_accumulator", []))
+        
+        # Multiple results need to be combined coherently
+        combined_parts = []
+        
+        # Add a header for the combined response
+        combined_parts.append("Here's the information you asked for:")
+        
+        # Process each sub-intent result
+        for idx, result in enumerate(results):
+            intent = result.get("intent")
+            text_accumulator = result.get("text_accumulator", [])
+            error = result.get("error")
+            
+            # Get the text from the accumulator or an error message
+            if text_accumulator and len(text_accumulator) > 0:
+                text = "".join(text_accumulator)
+            elif error:
+                text = f"I encountered an error while processing this part: {error}"
+            else:
+                text = "No information found for this part."
+            
+            # Create a header for this sub-intent
+            if intent:
+                header = f"\n\n## {intent.intent_type}: {intent.intent_text}"
+            else:
+                header = f"\n\n## Part {idx + 1}"
+            
+            # Add this section
+            combined_parts.append(f"{header}\n{text}")
+        
+        # Combine all parts
+        return "\n".join(combined_parts)
 
     async def run_pipeline(self, user_question: str, conversation_history: List = None, relevant_history: List = None) -> AsyncGenerator[str, None]:
         try:
@@ -577,16 +976,114 @@ class LangChainPipeline:
             if extra_contexts:
                 augmented_question = f"{user_question}\n\n" + "\n\n".join(extra_contexts)
             
-            # 1) Entity Extraction
+            # PHASE 2: Handle multiple intents by processing them in parallel
+            if has_multiple_intents:
+                # First, perform entity extraction once for all intents (to avoid duplication)
+                # This is a performance optimization as entity extraction is often similar
+                # for related sub-intents
+                yield self._format_message("Thinking", "Analyzing your multi-part question...")
+                
+                # 1) Entity Extraction (performed once for all intents)
+                extraction_inputs = {"question": user_question, "schema": self.neo4j_schema_text}
+                extraction_accumulator: List[str] = []
+                async for sse_message in self._stream_and_accumulate(
+                    self.entity_chain, 
+                    "Extracting entities", 
+                    extraction_inputs, 
+                    extraction_accumulator
+                ):
+                    yield sse_message
+                    
+                full_extraction_response = "".join(extraction_accumulator)
+                print(f"\n[DEBUG] Entity Extraction Response: {full_extraction_response}")
+                entities = self.entity_parser.parse(full_extraction_response)
+                
+                # Store entity extraction results to reuse
+                entity_extraction_results = {
+                    "full_extraction_response": full_extraction_response,
+                    "entities": entities
+                }
+                
+                # Inform the user that we're processing multiple parts
+                yield self._format_message(
+                    "Thinking", 
+                    f"Processing {len(intents)} parts of your question in parallel..."
+                )
+                
+                # 2) Process each sub-intent in parallel
+                try:
+                    # Create tasks for parallel processing with error handling
+                    tasks = [
+                        self._process_sub_intent(
+                            intent=intent,
+                            user_question=user_question,
+                            conversation_history=conversation_history,
+                            relevant_history=relevant_history,
+                            entity_extraction_results=entity_extraction_results
+                        )
+                        for intent in intents
+                    ]
+                    
+                    # Execute all tasks in parallel with error handling
+                    # Using gather with return_exceptions=True ensures that exceptions 
+                    # won't break the whole gather operation
+                    all_intent_results = await asyncio.gather(*tasks, return_exceptions=True)
+                    
+                    # Process results, handling any exceptions that were returned
+                    processed_results = []
+                    for i, result in enumerate(all_intent_results):
+                        if isinstance(result, Exception):
+                            # Handle exceptions returned by gather
+                            error_msg = str(result)
+                            print(f"\n[ERROR] Exception from sub-intent {i}: {error_msg}")
+                            processed_results.append({
+                                "intent": intents[i],
+                                "text_accumulator": [f"Error processing this part: {error_msg}"],
+                                "error": error_msg,
+                                "section": "Error"
+                            })
+                        else:
+                            # Add successful results
+                            processed_results.append(result)
+                    
+                    # 3) Combine results from all sub-intents
+                    combined_answer = self._combine_sub_intent_results(processed_results)
+                    
+                    # 4) Return the combined answer
+                    yield self._format_message("Answer", combined_answer)
+                    
+                    # Signal completion
+                    yield self._format_message("DONE", "")
+                    return
+                    
+                except Exception as e:
+                    yield self._format_message(
+                        "Error", 
+                        f"Error processing multiple parts of your question: {e}"
+                    )
+                    # Fall back to the standard single-intent pipeline
+                    yield self._format_message(
+                        "Thinking", 
+                        "Falling back to standard processing..."
+                    )
+                    # Continue with standard pipeline below, using the first intent
+                    
+            # Standard pipeline for single intent (or fallback if parallel processing failed)
+            # 1) Entity Extraction (if not already done)
             extraction_inputs = {"question": user_question, "schema": self.neo4j_schema_text}
             extraction_accumulator: List[str] = []
-            async for sse_message in self._stream_and_accumulate(self.entity_chain, "Extracting entities", extraction_inputs, extraction_accumulator):
-                yield sse_message
+            
+            # Skip if already done in the multi-intent branch
+            if not has_multiple_intents:
+                async for sse_message in self._stream_and_accumulate(self.entity_chain, "Extracting entities", extraction_inputs, extraction_accumulator):
+                    yield sse_message
+                    
             full_extraction_response = "".join(extraction_accumulator)
             print(f"\n[DEBUG] Entity Extraction Response: {full_extraction_response}")
             entities = self.entity_parser.parse(full_extraction_response)
             metabolites = [ent.name for ent in entities.entities if ent.type == "Metabolite"]
             first_metabolite = metabolites[0] if metabolites else None
+            
             if first_metabolite:
                 if first_metabolite.startswith("HMDB"):
                     payload = {"hmdb_id": [first_metabolite]}
