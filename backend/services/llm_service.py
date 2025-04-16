@@ -6,11 +6,17 @@ from langchain_community.llms import Ollama
 from langchain_groq import ChatGroq
 from langchain_openai import ChatOpenAI
 from openai import OpenAI
+import dashscope
+from dashscope import Generation
+
+# Set dashscope international base URL
+dashscope.base_http_api_url = 'https://dashscope-intl.aliyuncs.com/api/v1'
 
 class LLMProvider:
     GROQ = "groq"
     OLLAMA = "ollama"
     DEEPSEEK = "deepseek"
+    QWEN = "qwen"
 
 class MultiLLMService:
     def __init__(self, provider: str, api_key: Optional[str] = None, query_generator_model_name: Optional[str] = None,
@@ -26,6 +32,11 @@ class MultiLLMService:
             self.client = OllamaClient()
         elif self.provider == LLMProvider.DEEPSEEK:
             self.client = OpenAI(api_key=self.api_key, base_url="https://api.deepseek.com/v1")
+        elif self.provider == LLMProvider.QWEN:
+            # Qwen doesn't need a client instantiation as we'll use dashscope.Generation directly
+            # Set the dashscope API key
+            dashscope.api_key = self.api_key
+            self.client = None
         else:
             raise ValueError(f"Unsupported provider: {provider}")
 
@@ -52,6 +63,78 @@ class MultiLLMService:
                 model_name=self.default_query_model,
                 temperature=0.2,
                 max_tokens=1024,
+                streaming=streaming
+            )
+        elif self.provider == LLMProvider.QWEN:
+            # For Qwen, we'll use a custom class adapter that proxies to DashScope directly
+            from langchain_core.language_models.chat_models import BaseChatModel
+            from langchain_core.callbacks.manager import CallbackManagerForLLMRun
+            from langchain_core.messages import (
+                BaseMessage, SystemMessage, HumanMessage, AIMessage
+            )
+            from langchain_core.outputs import ChatGeneration, ChatResult
+            from typing import Any, Dict, List, Optional, Type, cast
+
+            class DashScopeChatModel(BaseChatModel):
+                api_key: str
+                model_name: str
+                temperature: float = 0.2
+                max_tokens: int = 2048
+                streaming: bool = False
+
+                def _generate(
+                    self, messages: List[BaseMessage], stop: Optional[List[str]] = None,
+                    run_manager: Optional[CallbackManagerForLLMRun] = None,
+                    **kwargs: Any
+                ) -> ChatResult:
+                    dashscope_messages = []
+                    for message in messages:
+                        if isinstance(message, SystemMessage):
+                            dashscope_messages.append({"role": "system", "content": message.content})
+                        elif isinstance(message, HumanMessage):
+                            dashscope_messages.append({"role": "user", "content": message.content})
+                        elif isinstance(message, AIMessage):
+                            dashscope_messages.append({"role": "assistant", "content": message.content})
+                    
+                    # Extract prompt from the last user message
+                    prompt = ""
+                    for message in reversed(messages):
+                        if isinstance(message, HumanMessage):
+                            prompt = message.content
+                            break
+
+                    response = Generation.call(
+                        api_key=self.api_key,
+                        model=self.model_name,
+                        messages=dashscope_messages,
+                        temperature=self.temperature,
+                        max_tokens=self.max_tokens
+                    )
+                    
+                    if response.status_code != 200:
+                        raise Exception(f"DashScope API error: {response.status_code} - {response.message}")
+                    
+                    message = AIMessage(content=response.output.text)
+                    return ChatResult(generations=[ChatGeneration(message=message)])
+                
+                async def _agenerate(
+                    self, messages: List[BaseMessage], stop: Optional[List[str]] = None,
+                    run_manager: Optional[CallbackManagerForLLMRun] = None,
+                    **kwargs: Any
+                ) -> ChatResult:
+                    # Just call the synchronous version for now
+                    return self._generate(messages, stop, run_manager, **kwargs)
+                
+                @property
+                def _llm_type(self) -> str:
+                    return "dashscope-chat"
+
+            # Return our custom DashScope adapter
+            return DashScopeChatModel(
+                api_key=self.api_key,
+                model_name=self.default_query_model,
+                temperature=temperature if temperature is not None else 0.2,
+                max_tokens=max_tokens if max_tokens is not None else 2048,
                 streaming=streaming
             )
         else:
@@ -94,6 +177,25 @@ class MultiLLMService:
                     top_p=1.0
                 )
                 return resp.choices[0].message.content.strip()
+            elif self.provider == LLMProvider.QWEN:
+                # Use dashscope.Generation for Qwen API call
+                messages = [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ]
+                resp = Generation.call(
+                    api_key=self.api_key,
+                    model=chosen_model,
+                    messages=messages,
+                    temperature=0.2,
+                    max_tokens=512,
+                    top_p=1.0
+                )
+                
+                if resp.status_code == 200:
+                    return resp.output.text.strip()
+                else:
+                    raise Exception(f"Qwen API error: {resp.status_code} - {resp.message}")
             else:
                 raise ValueError(f"Unsupported provider: {self.provider}")
         except Exception as err:
@@ -150,6 +252,26 @@ class MultiLLMService:
                     delta = chunk.choices[0].delta
                     if delta and delta.content:
                         yield delta.content
+            elif self.provider == LLMProvider.QWEN:
+                # Use dashscope.Generation for Qwen API call with streaming
+                messages = [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ]
+                stream = Generation.call(
+                    api_key=self.api_key,
+                    model=chosen_model,
+                    messages=messages,
+                    temperature=0.7,
+                    max_tokens=4096,
+                    top_p=1.0,
+                    stream=True,
+                    incremental_output=True
+                )
+                
+                async for chunk in self._async_iter(stream):
+                    if hasattr(chunk, 'output') and hasattr(chunk.output, 'text'):
+                        yield chunk.output.text
             else:
                 raise ValueError(f"Unsupported provider: {self.provider}")
         except Exception as stream_err:
@@ -221,6 +343,26 @@ class MultiLLMService:
                     delta = chunk.choices[0].delta
                     if delta and delta.content:
                         yield delta.content
+            elif self.provider == LLMProvider.QWEN:
+                # Use dashscope.Generation for Qwen API call with streaming
+                messages = [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": f"Question: {question}\nContext: {context}"}
+                ]
+                stream = Generation.call(
+                    api_key=self.api_key,
+                    model=chosen_model,
+                    messages=messages,
+                    temperature=0.7,
+                    max_tokens=2048,
+                    top_p=1.0,
+                    stream=True,
+                    incremental_output=True
+                )
+                
+                async for chunk in self._async_iter(stream):
+                    if hasattr(chunk, 'output') and hasattr(chunk.output, 'text'):
+                        yield chunk.output.text
             else:
                 raise ValueError(f"Unsupported provider: {self.provider}")
         except Exception as stream_err:

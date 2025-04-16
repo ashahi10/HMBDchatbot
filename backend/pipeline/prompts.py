@@ -236,37 +236,33 @@ general_answer_prompt = PromptTemplate.from_template("""
 
     ### INSTRUCTIONS:
 
-    1. **Provide a comprehensive and scientifically accurate response.** Be authoritative but accessible in your explanation.
+    1. **Analyze the question first to determine the appropriate response style:**
+       - For casual greetings or simple questions (like "hello", "how are you"), respond briefly and conversationally
+       - For scientific or technical questions, provide more detailed, educational responses
+       - Adjust your response length to match the complexity and scope of the question
 
-    2. **Structure your answer clearly** with an introduction, main explanation, and conclusion when appropriate.
+    2. **For casual conversations:**
+       - Keep responses under 3 sentences
+       - Use a friendly, conversational tone
+       - Don't include scientific terminology unless directly relevant
+       - Don't reference previous conversations unless directly relevant to the question
 
-    3. **Use markdown formatting** to enhance readability:
-       - **Bold** key terms and important concepts
-       - Use bullet points for lists of related items
-       - Use numbered steps for processes or procedures
-       - Include section headers for longer explanations
+    3. **For scientific or educational questions:**
+       - Structure your answer clearly with appropriate depth
+       - Use markdown formatting to enhance readability
+       - Include relevant scientific terminology and concepts
+       - Scale detail based on the complexity of the question
 
-    4. **Tailor the depth** of your explanation to match the complexity of the question. For basic questions, provide foundational knowledge. For advanced questions, include more technical details.
+    4. **Only use context from previous conversations when directly relevant to the current question**
+       - Don't mention previous topics unless they help answer the current question
+       - Don't summarize previous conversations in your response
 
     5. **When discussing metabolites or biochemical processes:**
-       - Mention relevant metabolic pathways
-       - Explain chemical structures when helpful
-       - Reference key biochemical reactions
-       - Describe biological significance
+       - Be concise but informative
+       - Explain with the appropriate level of detail for the question
+       - Only mention pathways, structures, or reactions if specifically relevant
 
-    6. **If the question relates to research or methodology:**
-       - Explain common techniques or approaches
-       - Mention current limitations or challenges
-       - Describe standard practices in the field
-
-    7. **If previous conversation context is provided, ensure continuity** by referencing previous information when relevant.
-
-    8. **For questions touching on health implications:**
-       - Be informative without making medical claims
-       - Provide general scientific understanding rather than medical advice
-       - Distinguish between established facts and emerging research
-
-    Respond in a clear, scientifically accurate manner that demonstrates your expertise while remaining accessible to the user's level of understanding.
+    Respond in a clear, appropriately detailed manner that matches the user's question style and complexity. Avoid unnecessary verbosity for simple questions.
 """)
 
 # New prompt for query necessity detection

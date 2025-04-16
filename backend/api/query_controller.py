@@ -195,18 +195,25 @@ async def query_endpoint(query_request: QueryRequest, request: Request):
             }
             yield f"data:{json.dumps(start_answer)}\n\n"
             
-            # Use LLM service to answer general question with streaming
+            # MODIFIED: Use pipeline's general_answer_chain instead of llm_service
             answer_text = ""
-            async for text_chunk in llm_service.answer_general_question(
-                question=query_request.question, 
-                context=context
-            ):
-                answer_text += text_chunk
-                chunk_message = {
-                    "section": "Answer",
-                    "text": text_chunk
-                }
-                yield f"data:{json.dumps(chunk_message)}\n\n"
+            pipeline = request.app.state.query_pipeline
+            
+            # Prepare inputs for the general_answer_chain
+            general_inputs = {
+                "question": query_request.question,
+                "context": context
+            }
+            
+            # Stream the response from pipeline's general_answer_chain
+            async for chunk in pipeline.general_answer_chain.astream(general_inputs):
+                if isinstance(chunk, str):
+                    answer_text += chunk
+                    chunk_message = {
+                        "section": "Answer",
+                        "text": chunk
+                    }
+                    yield f"data:{json.dumps(chunk_message)}\n\n"
             
             # Signal completion
             yield f"data:{json.dumps({'section': 'DONE'})}\n\n"

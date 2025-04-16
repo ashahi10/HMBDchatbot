@@ -46,6 +46,9 @@ class LangChainPipeline:
         self.hmdb_client = hmdb_client
         self.env_groq_api_key = os.getenv("GROQ_API_KEY")
         self.env_groq_api_key_generation = os.getenv("GROQ_API_KEY_GENERATION")
+        # Add Qwen API keys
+        self.env_qwen_api_key = os.getenv("QWEN_API")
+        self.env_qwen_api_key_generation = os.getenv("QWEN")
 
         self.entity_parser = PydanticOutputParser(pydantic_object=EntityList)
         self.query_plan_parser = PydanticOutputParser(pydantic_object=QueryPlan)
@@ -100,7 +103,7 @@ class LangChainPipeline:
             use_env_key=True,
             custom_model="llama-3.3-70b-versatile",
             custom_temperature=0.7,
-            custom_max_tokens=8192
+            custom_max_tokens=4096
         )
 
         self.entity_chain = self._create_chain(
@@ -108,9 +111,9 @@ class LangChainPipeline:
             entity_prompt, 
             streaming=True, 
             parser=None,
-            model_type="query",
+            model_type="entity",
             use_env_key=True,
-            custom_model="qwen-2.5-32b",
+            custom_model="qwen2.5-32b-instruct",
             custom_temperature=0.1,
             custom_max_tokens=6000
         )
@@ -119,20 +122,20 @@ class LangChainPipeline:
             query_plan_prompt, 
             streaming=True, 
             parser=None,
-            model_type="query",
+            model_type="entity",
             use_env_key=True,
-            custom_model="qwen-2.5-32b",
+            custom_model="qwen2.5-32b-instruct",
             custom_temperature=0.1,
-            custom_max_tokens=10000
+            custom_max_tokens=8192
         )
         self.query_chain = self._create_chain(
             {"query_plan": lambda x: x["query_plan"], "schema": lambda _: self.neo4j_schema_text}, 
             query_prompt, 
             streaming=True, 
             parser=None,
-            model_type="query",
+            model_type="query_generation",
             use_env_key=True,
-            custom_model="qwen-2.5-coder-32b",
+            custom_model="qwen2.5-72b-instruct",
             custom_temperature=0.1,
             custom_max_tokens=4096
         )
@@ -167,11 +170,27 @@ class LangChainPipeline:
             
         # Create a temporary LLM service with environment API key if needed
         if use_env_key:
-            # Use GROQ_API_KEY_GENERATION for entity and query plan chains
-            api_key = self.env_groq_api_key_generation if model_type == "query" else self.env_groq_api_key
+            # Select the appropriate API key based on model_type
+            provider = "groq"  # Default provider
+            api_key = None
+            
+            if model_type == "entity":
+                # Use Qwen API for entity extraction and query planning
+                api_key = self.env_qwen_api_key
+                provider = "qwen" if api_key else "groq"
+            elif model_type == "query_generation":
+                # Use Qwen API for query generation
+                api_key = self.env_qwen_api_key_generation
+                provider = "qwen" if api_key else "groq"
+            elif model_type == "query":
+                # Use GROQ for other query operations
+                api_key = self.env_groq_api_key_generation
+            else:  # summary and other types
+                api_key = self.env_groq_api_key
+                
             if api_key:
                 temp_llm_service = MultiLLMService(
-                    provider="groq",
+                    provider=provider,
                     api_key=api_key,
                     query_generator_model_name=custom_model or self.llm_service.default_query_model,
                     query_summarizer_model=custom_model or self.llm_service.default_summary_model
@@ -419,6 +438,36 @@ class LangChainPipeline:
                     
         return False, None
 
+    def _clean_cypher_query(self, query_text: str) -> str:
+        """
+        Strip Markdown code block delimiters and other formatting from Cypher queries.
+        
+        Args:
+            query_text: The raw query text that might contain Markdown formatting
+            
+        Returns:
+            Clean Cypher query ready for execution
+        """
+        # Remove markdown code block start/end
+        if "```" in query_text:
+            # Extract content between code blocks if present
+            import re
+            cypher_match = re.search(r'```(?:cypher)?\s*([\s\S]*?)```', query_text)
+            if cypher_match:
+                query_text = cypher_match.group(1).strip()
+        
+        # Remove any remaining backticks
+        query_text = query_text.replace('`', '')
+        
+        # Remove any leading/trailing whitespace and newlines
+        query_text = query_text.strip()
+        
+        # Ensure query ends with semicolon
+        if not query_text.endswith(';'):
+            query_text += ';'
+        
+        return query_text
+
     async def _process_sub_intent(self, intent: Intent, user_question: str, 
                                conversation_history: List = None, 
                                relevant_history: List = None,
@@ -463,22 +512,34 @@ class LangChainPipeline:
                 # Reuse entities from main question if they're already extracted
                 full_extraction_response = entity_extraction_results.get("full_extraction_response")
                 entities = entity_extraction_results.get("entities")
+                print(f"\n[DEBUG] Reusing entity extraction results: {entities}")
             else:
                 # Perform entity extraction for this sub-intent
                 extraction_inputs = {"question": sub_question, "schema": self.neo4j_schema_text}
                 extraction_accumulator: List[str] = []
                 
+                print(f"\n[DEBUG] Performing entity extraction for: {sub_question}")
                 # Stream entity extraction (only for internal processing)
-                async for _ in self._stream_and_accumulate(
-                    self.entity_chain, 
-                    "Extracting entities", 
-                    extraction_inputs, 
-                    extraction_accumulator
-                ):
-                    pass  # We don't yield these messages, just accumulate
-                
-                full_extraction_response = "".join(extraction_accumulator)
-                entities = self.entity_parser.parse(full_extraction_response)
+                try:
+                    async for _ in self._stream_and_accumulate(
+                        self.entity_chain, 
+                        "Extracting entities", 
+                        extraction_inputs, 
+                        extraction_accumulator
+                    ):
+                        pass  # We don't yield these messages, just accumulate
+                    
+                    full_extraction_response = "".join(extraction_accumulator)
+                    print(f"\n[DEBUG] Entity extraction successful: {full_extraction_response}")
+                    entities = self.entity_parser.parse(full_extraction_response)
+                except Exception as extraction_error:
+                    print(f"\n[ERROR] Entity extraction failed: {extraction_error}")
+                    return {
+                        "intent": intent,
+                        "text_accumulator": [f"Error during entity extraction: {str(extraction_error)}"],
+                        "section": "Error",
+                        "error": str(extraction_error)
+                    }
             
             # Store entity results
             intent_results["entities"] = entities
@@ -487,6 +548,7 @@ class LangChainPipeline:
             # Extract metabolites for potential API lookup
             metabolites = [ent.name for ent in entities.entities if ent.type == "Metabolite"]
             first_metabolite = metabolites[0] if metabolites else None
+            print(f"\n[DEBUG] Extracted metabolites: {metabolites}")
             
             # 2) Query Planning
             planning_inputs = {
@@ -496,23 +558,36 @@ class LangChainPipeline:
             }
             planning_accumulator: List[str] = []
             
+            print(f"\n[DEBUG] Starting query planning for: {sub_question}")
             # Stream query planning (only for internal processing)
-            async for _ in self._stream_and_accumulate(
-                self.query_plan_chain, 
-                "Query planning", 
-                planning_inputs, 
-                planning_accumulator
-            ):
-                pass  # We don't yield these messages, just accumulate
-            
-            full_query_plan_response = "".join(planning_accumulator)
-            query_plan = self.query_plan_parser.parse(full_query_plan_response)
+            try:
+                async for _ in self._stream_and_accumulate(
+                    self.query_plan_chain, 
+                    "Query planning", 
+                    planning_inputs, 
+                    planning_accumulator
+                ):
+                    pass  # We don't yield these messages, just accumulate
+                
+                full_query_plan_response = "".join(planning_accumulator)
+                print(f"\n[DEBUG] Query plan response: {full_query_plan_response}")
+                query_plan = self.query_plan_parser.parse(full_query_plan_response)
+                print(f"\n[DEBUG] Parsed query plan: should_query={query_plan.should_query}, intent={query_plan.query_intent}")
+            except Exception as planning_error:
+                print(f"\n[ERROR] Query planning failed: {planning_error}")
+                return {
+                    "intent": intent,
+                    "text_accumulator": [f"Error during query planning: {str(planning_error)}"],
+                    "section": "Error",
+                    "error": str(planning_error)
+                }
             
             # Store query plan
             intent_results["query_plan"] = query_plan
             
             # 3) Execute query if needed
             if query_plan.should_query:
+                print(f"\n[DEBUG] Query execution required: {query_plan.reasoning}")
                 # Check memory for reusable data first
                 memory_raw_data = None
                 used_memory_data = False
@@ -524,6 +599,9 @@ class LangChainPipeline:
                         query_plan.query_intent
                     )
                     used_memory_data = has_reusable_data and memory_raw_data
+                    
+                    if used_memory_data:
+                        print(f"\n[DEBUG] Using memory data for query: {memory_raw_data.keys() if memory_raw_data else None}")
                 
                 # Skip query execution if we have memory data
                 neo4j_results = None
@@ -534,25 +612,48 @@ class LangChainPipeline:
                     query_accumulator: List[str] = []
                     
                     # Stream query generation (only for internal processing)
-                    async for _ in self._stream_and_accumulate(
-                        self.query_chain, 
-                        "Query execution", 
-                        query_inputs, 
-                        query_accumulator
-                    ):
-                        pass  # We don't yield these messages, just accumulate
+                    try:
+                        print(f"\n[DEBUG] Generating Neo4j query for plan: {query_plan}")
+                        async for _ in self._stream_and_accumulate(
+                            self.query_chain, 
+                            "Query execution", 
+                            query_inputs, 
+                            query_accumulator
+                        ):
+                            pass  # We don't yield these messages, just accumulate
+                            
+                        full_query_response = "".join(query_accumulator)
+                        print(f"\n[DEBUG] Generated query: {full_query_response}")
                         
-                    full_query_response = "".join(query_accumulator)
+                        # Clean the query to remove markdown formatting
+                        clean_query = self._clean_cypher_query(full_query_response)
+                        print(f"\n[DEBUG] Cleaned query for execution: {clean_query}")
+                    except Exception as query_gen_error:
+                        print(f"\n[ERROR] Query generation failed: {query_gen_error}")
+                        return {
+                            "intent": intent,
+                            "text_accumulator": [f"Error generating Neo4j query: {str(query_gen_error)}"],
+                            "section": "Error",
+                            "error": str(query_gen_error)
+                        }
                     
                     try:
-                        # Execute Neo4j query
-                        neo4j_results = self.neo4j_connection.run_query(full_query_response)
+                        # Execute Neo4j query with cleaned query
+                        print(f"\n[DEBUG] Executing Neo4j query...")
+                        # Clean the query to remove markdown formatting before execution
+                        clean_query = self._clean_cypher_query(full_query_response)
+                        print(f"\n[DEBUG] Cleaned query for execution: {clean_query}")
+                        neo4j_results = self.neo4j_connection.run_query(clean_query)
+                        print(f"\n[DEBUG] Neo4j raw query results: {neo4j_results}")
+                        
                         intent_results["neo4j_results"] = neo4j_results
                         
                         # Check if we need fallback to API
                         should_fallback = analyze_missing_fields(sub_question, neo4j_results)
                         if not neo4j_results or neo4j_results == [None] or neo4j_results == [""]:
                             should_fallback = True
+                            
+                        print(f"\n[DEBUG] Need API fallback? {should_fallback}")
                         
                         # Get additional description results if needed
                         for metabolite in metabolites:
@@ -564,6 +665,7 @@ class LangChainPipeline:
                                 RETURN m.description
                             """)
                             if more_results:
+                                print(f"\n[DEBUG] Additional description results: {more_results}")
                                 neo4j_results += more_results
                                 intent_results["neo4j_results"] = neo4j_results
                         
@@ -573,12 +675,19 @@ class LangChainPipeline:
                             fallback_data = None
                             
                             # Make API call based on ID or name
-                            if first_metabolite.startswith("HMDB"):
-                                payload = {"hmdb_id": [first_metabolite]}
-                                fallback_data = self.hmdb_client.post("metabolites", payload)
-                            else:
-                                payload = {"name": first_metabolite}
-                                fallback_data = self.hmdb_client.post("metabolites/search", payload)
+                            try:
+                                if first_metabolite.startswith("HMDB"):
+                                    print(f"\n[DEBUG] Making HMDB API call for ID: {first_metabolite}")
+                                    payload = {"hmdb_id": [first_metabolite]}
+                                    fallback_data = self.hmdb_client.post("metabolites", payload)
+                                else:
+                                    print(f"\n[DEBUG] Making HMDB API search for name: {first_metabolite}")
+                                    payload = {"name": first_metabolite}
+                                    fallback_data = self.hmdb_client.post("metabolites/search", payload)
+                                
+                                print(f"\n[DEBUG] HMDB API response: {fallback_data.keys() if fallback_data else None}")
+                            except Exception as api_error:
+                                print(f"\n[ERROR] HMDB API call failed: {api_error}")
                             
                             # Process API response
                             if fallback_data and "found" in fallback_data:
@@ -586,83 +695,100 @@ class LangChainPipeline:
                                 intent_results["api_data"] = filtered_fallback_data
                                 
                                 # Run API reasoning chain
-                                api_reasoning_inputs = {
-                                    "api_data": filtered_fallback_data,
-                                    "question": sub_question
-                                }
-                                api_reasoning_accumulator: List[str] = []
-                                
-                                # Stream API reasoning (only for internal processing)
-                                async for _ in self._stream_and_accumulate(
-                                    self.api_reasoning_chain,
-                                    "API Summary",
-                                    api_reasoning_inputs,
-                                    api_reasoning_accumulator
-                                ):
-                                    pass  # We don't yield these messages, just accumulate
-                                
-                                # Store API reasoning results
-                                api_summary = "".join(api_reasoning_accumulator)
-                                intent_results["api_summary"] = api_summary
-                                
-                                # If we have Neo4j results, run DB summary chain too
-                                if neo4j_results and not should_fallback:
-                                    summary_inputs = {
-                                        "query_results": neo4j_results,
+                                try:
+                                    print(f"\n[DEBUG] Running API reasoning chain...")
+                                    api_reasoning_inputs = {
+                                        "api_data": filtered_fallback_data,
                                         "question": sub_question
                                     }
-                                    summary_accumulator: List[str] = []
+                                    api_reasoning_accumulator: List[str] = []
                                     
-                                    # Stream DB summary (only for internal processing)
+                                    # Stream API reasoning (only for internal processing)
                                     async for _ in self._stream_and_accumulate(
-                                        self.summary_chain,
-                                        "DB Summary",
-                                        summary_inputs,
-                                        summary_accumulator
+                                        self.api_reasoning_chain,
+                                        "API Summary",
+                                        api_reasoning_inputs,
+                                        api_reasoning_accumulator
                                     ):
                                         pass  # We don't yield these messages, just accumulate
                                     
-                                    # Store DB summary results
-                                    db_summary = "".join(summary_accumulator)
-                                    intent_results["db_summary"] = db_summary
+                                    # Store API reasoning results
+                                    api_summary = "".join(api_reasoning_accumulator)
+                                    intent_results["api_summary"] = api_summary
+                                    print(f"\n[DEBUG] API summary generated successfully")
                                     
-                                    # Merge both summaries
-                                    final_summary = self._merge_summaries(db_summary, api_summary)
-                                    intent_results["text_accumulator"].append(final_summary)
-                                else:
-                                    # If no Neo4j results, just use API summary
-                                    intent_results["text_accumulator"].append(api_summary)
+                                    # If we have Neo4j results, run DB summary chain too
+                                    if neo4j_results and not should_fallback:
+                                        summary_inputs = {
+                                            "query_results": neo4j_results,
+                                            "question": sub_question
+                                        }
+                                        summary_accumulator: List[str] = []
+                                        
+                                        # Stream DB summary (only for internal processing)
+                                        async for _ in self._stream_and_accumulate(
+                                            self.summary_chain,
+                                            "DB Summary",
+                                            summary_inputs,
+                                            summary_accumulator
+                                        ):
+                                            pass  # We don't yield these messages, just accumulate
+                                        
+                                        # Store DB summary results
+                                        db_summary = "".join(summary_accumulator)
+                                        intent_results["db_summary"] = db_summary
+                                        
+                                        # Merge both summaries
+                                        final_summary = self._merge_summaries(db_summary, api_summary)
+                                        intent_results["text_accumulator"].append(final_summary)
+                                    else:
+                                        # If no Neo4j results, just use API summary
+                                        intent_results["text_accumulator"].append(api_summary)
+                                except Exception as reasoning_error:
+                                    print(f"\n[ERROR] API reasoning failed: {reasoning_error}")
+                                    intent_results["error"] = f"API reasoning failed: {reasoning_error}"
+                                    intent_results["text_accumulator"].append(f"Error processing API data: {reasoning_error}")
                             else:
                                 intent_results["error"] = "No data found in HMDB API response"
+                                print(f"\n[DEBUG] No data found in HMDB API response")
                         
                         # If no fallback needed or fallback failed, use Neo4j results
                         elif neo4j_results and neo4j_results != [None] and neo4j_results != [""]:
-                            summary_inputs = {
-                                "query_results": neo4j_results,
-                                "question": sub_question
-                            }
-                            summary_accumulator: List[str] = []
-                            
-                            # Stream DB summary (only for internal processing)
-                            async for _ in self._stream_and_accumulate(
-                                self.summary_chain,
-                                "Answer",
-                                summary_inputs,
-                                summary_accumulator
-                            ):
-                                pass  # We don't yield these messages, just accumulate
-                            
-                            # Store summary
-                            summary = "".join(summary_accumulator)
-                            intent_results["db_summary"] = summary
-                            intent_results["text_accumulator"].append(summary)
+                            try:
+                                print(f"\n[DEBUG] Generating summary from Neo4j results...")
+                                summary_inputs = {
+                                    "query_results": neo4j_results,
+                                    "question": sub_question
+                                }
+                                summary_accumulator: List[str] = []
+                                
+                                # Stream DB summary (only for internal processing)
+                                async for _ in self._stream_and_accumulate(
+                                    self.summary_chain,
+                                    "Answer",
+                                    summary_inputs,
+                                    summary_accumulator
+                                ):
+                                    pass  # We don't yield these messages, just accumulate
+                                
+                                # Store summary
+                                summary = "".join(summary_accumulator)
+                                intent_results["db_summary"] = summary
+                                intent_results["text_accumulator"].append(summary)
+                                print(f"\n[DEBUG] Neo4j summary generated successfully")
+                            except Exception as summary_error:
+                                print(f"\n[ERROR] Summary generation failed: {summary_error}")
+                                intent_results["error"] = f"Summary generation failed: {summary_error}"
+                                intent_results["text_accumulator"].append(f"Error generating summary: {summary_error}")
                         else:
                             intent_results["error"] = "No results found in database"
                             intent_results["text_accumulator"].append("I couldn't find the information you're looking for in our database.")
+                            print(f"\n[DEBUG] No results found in database or API")
                     
                     except Exception as e:
+                        print(f"\n[ERROR] Neo4j query execution failed: {e}")
                         intent_results["error"] = f"Neo4j query execution failed: {e}"
-                        intent_results["text_accumulator"].append("I encountered an error while querying the database.")
+                        intent_results["text_accumulator"].append(f"I encountered an error while querying the database: {e}")
                 
                 # Use memory data if available
                 elif used_memory_data:
@@ -742,7 +868,7 @@ class LangChainPipeline:
                         # No usable data in memory after all
                         intent_results["error"] = "Memory data could not be used"
             else:
-                # No database query needed
+                print(f"\n[DEBUG] No database query needed: {query_plan.reasoning}")
                 intent_results["text_accumulator"].append(f"No database query needed for this part. {query_plan.reasoning}")
             
             # Return the results for this sub-intent
@@ -751,6 +877,8 @@ class LangChainPipeline:
         except Exception as e:
             # Handle any errors in the sub-intent processing
             print(f"\n[ERROR] Error processing sub-intent '{intent.intent_type}': {str(e)}")
+            import traceback
+            traceback.print_exc()  # Print the full stack trace
             return {
                 "intent": intent,
                 "text_accumulator": [f"Error processing this part of your question: {str(e)}"],
@@ -857,6 +985,17 @@ class LangChainPipeline:
 
     async def run_pipeline(self, user_question: str, conversation_history: List = None, relevant_history: List = None) -> AsyncGenerator[str, None]:
         try:
+            # Initialize intent_results dictionary to avoid "name not defined" error
+            intent_results = {
+                "text_accumulator": [],
+                "section": "Answer",
+                "entities": [],
+                "neo4j_results": None,
+                "api_data": None,
+                "query_plan": None,
+                "error": None
+            }
+            
             # Enhanced context generation to properly handle entity continuity
             context_info = ""
             entity_context = {}
@@ -1191,7 +1330,12 @@ class LangChainPipeline:
                     print(f"\n[DEBUG] Generated Cypher Query: {full_query_response}")
 
                     try:
-                        neo4j_results = self.neo4j_connection.run_query(full_query_response)
+                        # Execute Neo4j query
+                        print(f"\n[DEBUG] Executing Neo4j query...")
+                        # Clean the query to remove markdown formatting before execution
+                        clean_query = self._clean_cypher_query(full_query_response)
+                        print(f"\n[DEBUG] Cleaned query for execution: {clean_query}")
+                        neo4j_results = self.neo4j_connection.run_query(clean_query)
                         print(f"\n[DEBUG] Neo4j raw query results: {neo4j_results}")
 
                         # Check if we need fallback
@@ -1212,6 +1356,7 @@ class LangChainPipeline:
                                 RETURN m.description
                             """)
                             if more_results:
+                                print(f"\n[DEBUG] Additional description results: {more_results}")
                                 neo4j_results += more_results
 
                         # Handle fallback if needed
@@ -1224,7 +1369,7 @@ class LangChainPipeline:
                                 payload = {"hmdb_id": [first_metabolite]}
                                 fallback_data = self.hmdb_client.post("metabolites", payload)
                             else:
-                                print(f"\n[DEBUG] Making API search call for name '{first_metabolite}'")
+                                print(f"\n[DEBUG] Making HMDB API search for name: {first_metabolite}")
                                 payload = {"name": first_metabolite}
                                 fallback_data = self.hmdb_client.post("metabolites/search", payload)
 
@@ -1250,7 +1395,7 @@ class LangChainPipeline:
                                     api_reasoning_inputs,
                                     api_reasoning_accumulator
                                 ):
-                                    yield sse_message
+                                    pass  # We don't yield these messages, just accumulate
 
                                 # If we have Neo4j results, run DB summary chain too
                                 # if neo4j_results and neo4j_results != [None] and neo4j_results != [""]:
@@ -1267,17 +1412,17 @@ class LangChainPipeline:
                                         summary_inputs,
                                         summary_accumulator
                                     ):
-                                        yield sse_message
-
+                                        pass  # We don't yield these messages, just accumulate
+                                    
                                     # Merge both summaries
                                     final_summary = self._merge_summaries(
                                         "".join(summary_accumulator),
                                         "".join(api_reasoning_accumulator)
                                     )
-                                    yield self._format_message("Answer", final_summary)
+                                    intent_results["text_accumulator"].append(final_summary)
                                 else:
                                     # If no Neo4j results, just use API summary
-                                    yield self._format_message("Answer", "".join(api_reasoning_accumulator))
+                                    intent_results["text_accumulator"].append("".join(api_reasoning_accumulator))
                                 return
 
                         # If no fallback needed or fallback failed, use Neo4j results
@@ -1301,11 +1446,12 @@ class LangChainPipeline:
                             ):
                                 yield sse_message
                         else:
-                            yield self._format_message("Answer", "I apologize, but I couldn't find the information you're looking for in our database.")
+                            intent_results["text_accumulator"].append("I apologize, but I couldn't find the information you're looking for in our database.")
 
                     except Exception as e:
                         print(f"\n[ERROR] Neo4j query execution failed: {e}")
-                        yield self._format_message("Answer", "I apologize, but I encountered an error while querying the database.")
+                        intent_results["error"] = f"Neo4j query execution failed: {e}"
+                        intent_results["text_accumulator"].append(f"I encountered an error while querying the database: {e}")
                 
                 # PHASE 3: If we have memory_raw_data, use it directly
                 elif used_memory_data:
@@ -1318,18 +1464,19 @@ class LangChainPipeline:
                         }
                         summary_accumulator: List[str] = []
                         
-                        # Inform the user we're using memory data
-                        yield self._format_message("Thinking", "Using previously retrieved database information to answer your question.")
-                        
-                        # Stream the summary
-                        async for sse_message in self._stream_and_accumulate(
+                        # Stream DB summary (only for internal processing) 
+                        async for _ in self._stream_and_accumulate(
                             self.summary_chain,
                             "DB Summary", 
                             summary_inputs,
                             summary_accumulator
                         ):
-                            yield sse_message
-                            
+                            pass  # We don't yield these messages, just accumulate
+                        
+                        # Store DB summary
+                        db_summary = "".join(summary_accumulator)
+                        intent_results["db_summary"] = db_summary
+                        
                         # If we also have API data, use it too
                         api_summary = ""
                         if "api_data" in memory_raw_data and memory_raw_data["api_data"]:
@@ -1338,53 +1485,51 @@ class LangChainPipeline:
                                 "question": user_question
                             }
                             api_reasoning_accumulator: List[str] = []
-                            async for sse_message in self._stream_and_accumulate(
+                            
+                            # Stream API reasoning (only for internal processing)
+                            async for _ in self._stream_and_accumulate(
                                 self.api_reasoning_chain,
                                 "API Summary",
                                 api_reasoning_inputs,
                                 api_reasoning_accumulator
                             ):
-                                yield sse_message
-                            api_summary = "".join(api_reasoning_accumulator)
+                                pass  # We don't yield these messages, just accumulate
                             
+                            # Store API summary
+                            api_summary = "".join(api_reasoning_accumulator)
+                            intent_results["api_summary"] = api_summary
+                        
                         # Merge both summaries if we have API data
                         if api_summary:
-                            final_summary = self._merge_summaries(
-                                "".join(summary_accumulator),
-                                api_summary
-                            )
-                            yield self._format_message("Answer", final_summary)
+                            final_summary = self._merge_summaries(db_summary, api_summary)
+                            intent_results["text_accumulator"].append(final_summary)
                         else:
-                            yield self._format_message("Answer", "".join(summary_accumulator))
-                            
+                            intent_results["text_accumulator"].append(db_summary)
+                    
                     elif "api_data" in memory_raw_data and memory_raw_data["api_data"]:
                         # Only have API data from memory
-                        yield self._format_message("Thinking", "Using previously retrieved API information to answer your question.")
-                        
                         api_reasoning_inputs = {
                             "api_data": memory_raw_data["api_data"],
                             "question": user_question
                         }
                         api_reasoning_accumulator: List[str] = []
-                        async for sse_message in self._stream_and_accumulate(
+                        
+                        # Stream API reasoning (only for internal processing)
+                        async for _ in self._stream_and_accumulate(
                             self.api_reasoning_chain,
                             "API Summary",
                             api_reasoning_inputs,
                             api_reasoning_accumulator
                         ):
-                            yield sse_message
-                            
-                        yield self._format_message("Answer", "".join(api_reasoning_accumulator))
+                            pass  # We don't yield these messages, just accumulate
+                        
+                        # Store API summary
+                        api_summary = "".join(api_reasoning_accumulator)
+                        intent_results["api_summary"] = api_summary
+                        intent_results["text_accumulator"].append(api_summary)
                     else:
                         # No usable data in memory after all
-                        yield self._format_message("Thinking", "Memory data could not be used. Proceeding with regular query.")
-                        
-                        # Fallback to normal query
-                        query_inputs = {"query_plan": query_plan, "schema": self.neo4j_schema_text}
-                        query_accumulator: List[str] = []
-                        async for sse_message in self._stream_and_accumulate(self.query_chain, "Query execution", query_inputs, query_accumulator):
-                            yield sse_message
-                        # ... (continue with regular query flow)
+                        intent_results["error"] = "Memory data could not be used"
             else:
                 yield self._format_message("Response", f"No database query needed. {query_plan.reasoning}")
 

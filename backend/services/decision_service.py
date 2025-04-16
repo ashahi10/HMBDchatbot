@@ -261,6 +261,36 @@ class QueryDecisionService:
         if not memory_results:
             return ""
         
+        # Extract the latest user query from the first memory result to analyze it
+        latest_query = ""
+        if memory_results and len(memory_results) > 0:
+            latest_query = memory_results[0].get("user_query", "").lower()
+        
+        # Don't include memory context for casual conversations or simple greetings
+        casual_patterns = [
+            r"^(?:hi|hello|hey|greetings|howdy)[\s!.?]*$",
+            r"^(?:how\s+are\s+you|what's\s+up|how's\s+it\s+going)[\s!.?]*$",
+            r"^(?:thank|thanks)[\s!.?]*$",
+            r"^(?:bye|goodbye|see\s+you)[\s!.?]*$"
+        ]
+        
+        # Check if the query matches any casual pattern
+        if latest_query and any(re.match(pattern, latest_query) for pattern in casual_patterns):
+            return ""  # Return empty context for casual conversations
+        
+        # For very short queries (less than 5 words), don't include memory context
+        if latest_query and len(latest_query.split()) < 5:
+            # Check if it's a simple question not requiring context
+            simple_patterns = [
+                r"^what\s+is[\s\w]*\?*$",
+                r"^who\s+are[\s\w]*\?*$",
+                r"^where\s+is[\s\w]*\?*$",
+                r"^how\s+do[\s\w]*\?*$"
+            ]
+            if any(re.match(pattern, latest_query) for pattern in simple_patterns):
+                return ""  # Return empty context for simple questions
+                
+        # For other queries, prepare context as before
         context_parts = []
         for i, memory in enumerate(memory_results[:limit]):
             if i >= limit:
