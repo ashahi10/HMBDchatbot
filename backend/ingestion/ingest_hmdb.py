@@ -20,12 +20,12 @@ SKIP_CLEAR = True  # Set True to skip clearing Neo4j
 
 # Explicit XML file paths to avoid directory issues
 XML_FILES = [
-    # "HMDB_DATA/csf_metabolites.xml",
-    # "HMDB_DATA/saliva_metabolites.xml",
-    # "HMDB_DATA/serum_metabolites.xml",
-    # "HMDB_DATA/sweat_metabolites.xml",
-    # "HMDB_DATA/urine_metabolites.xml",
-    # "HMDB_DATA/feces_metabolites.xml",
+    "HMDB_DATA/csf_metabolites.xml",
+    "HMDB_DATA/saliva_metabolites.xml",
+    "HMDB_DATA/serum_metabolites.xml",
+    "HMDB_DATA/sweat_metabolites.xml",
+    "HMDB_DATA/urine_metabolites.xml",
+    "HMDB_DATA/feces_metabolites.xml",
     "HMDB_DATA/hmdb_proteins.xml",
     "HMDB_DATA/hmdb_metabolites.xml",
 ]
