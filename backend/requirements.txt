@@ -1,0 +1,42 @@
+# Core Framework
+fastapi>=0.104.0
+uvicorn>=0.24.0
+python-dotenv>=1.0.0
+
+# Database
+neo4j>=5.14.0
+
+# LLM and AI
+langchain>=0.1.0
+langchain-core>=0.1.0
+langchain-community>=0.0.10
+langchain-groq>=0.0.1
+langchain-openai>=0.0.2
+groq>=0.4.0
+ollama>=0.1.6
+openai>=1.12.0
+dashscope>=1.13.6
+
+# Data Processing
+pydantic>=2.5.0
+typing-extensions>=4.8.0
+
+# Testing
+pytest>=7.4.0
+
+# Utilities
+python-multipart>=0.0.6
+aiohttp>=3.9.0
+asyncio>=3.4.3
+requests>=2.31.0
+requests-cache>=1.1.1
+
+# Caching
+cachetools>=5.3.2
+
+# Security
+python-jose[cryptography]>=3.3.0
+passlib[bcrypt]>=1.7.4
+
+# API Documentation
+fastapi-swagger-ui>=0.1.0 
