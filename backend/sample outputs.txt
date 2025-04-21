@@ -1207,3 +1207,597 @@ INFO:httpx:HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "H
 [DEBUG] All extracted entities: {'Dysregulation in lactate and pyruvate metabolism', 'D-Lactic', 'Citric acid cycle', 'Pyruvic acid is produced from phosphoenolpyruvate'}
 [DEBUG] Stored memory with entity: D-Lactic
 [DEBUG] Stored raw data types: ['entity_extraction']
+
+
+
+
+
+
+
+yo
+            "name": "cerebrospinal fluid",
+            "type": "Biofluid",
+            "confidence": 0.9
+        }
+    ],
+    "query_intent": "find relationships between entities",
+    "should_query": true,
+    "reasoning": "The user is asking for metabolites associated with 'depression' that are detected in 'cerebrospinal fluid'. Both 'depression' and 'cerebrospinal fluid' are valid entities according to the schema, with 'depression' being a Disease and 'cerebrospinal fluid' being a Biofluid. The query will aim to find Metabolites that have a relationship with both entities."
+}
+```
+
+[DEBUG] Parsed query plan: should_query=True, intent=find relationships between entities
+
+[DEBUG] Query execution required: The user is asking for metabolites associated with 'depression' that are detected in 'cerebrospinal fluid'. Both 'depression' and 'cerebrospinal fluid' are valid entities according to the schema, with 'depression' being a Disease and 'cerebrospinal fluid' being a Biofluid. The query will aim to find Metabolites that have a relationship with both entities.
+
+[DEBUG] Generating Neo4j query for plan: entities=[Entity(name='depression', type='Disease', confidence=0.9), Entity(name='cerebrospinal fluid', type='Biofluid', confidence=0.9)] query_intent='find relationships between entities' should_query=True reasoning="The user is asking for metabolites associated with 'depression' that are detected in 'cerebrospinal fluid'. Both 'depression' and 'cerebrospinal fluid' are valid entities according to the schema, with 'depression' being a Disease and 'cerebrospinal fluid' being a Biofluid. The query will aim to find Metabolites that have a relationship with both entities."
+
+[DEBUG] Query plan response: ```json
+{
+    "entities": [
+        {
+            "name": "depression",
+            "type": "Disease",
+            "confidence": 0.9
+        },
+        {
+            "name": "cerebrospinal fluid",
+            "type": "Biofluid",
+            "confidence": 0.9
+        },
+        {
+            "name": "neurotransmission",
+            "type": "OntologyTerm",
+            "confidence": 0.7
+        }
+    ],
+    "query_intent": "find relationships between entities related to neurotransmission",
+    "should_query": true,
+    "reasoning": "The user is asking about the roles of entities in neurotransmission. Given the extracted entities 'depression' as Disease, 'cerebrospinal fluid' as Biofluid, and 'neurotransmission' as OntologyTerm, it is reasonable to infer that the user is interested in understanding how these entities are connected to neurotransmission. The database schema supports querying relationships involving these entities through various relationships such as DETECTED_IN_BIOFLUID, ASSOCIATED_WITH_DISEASE, and HAS_ONTOLOGY_TERM."
+}
+```
+
+[DEBUG] Parsed query plan: should_query=True, intent=find relationships between entities related to neurotransmission
+
+[DEBUG] Query execution required: The user is asking about the roles of entities in neurotransmission. Given the extracted entities 'depression' as Disease, 'cerebrospinal fluid' as Biofluid, and 'neurotransmission' as OntologyTerm, it is reasonable to infer that the user is interested in understanding how these entities are connected to neurotransmission. The database schema supports querying relationships involving these entities through various relationships such as DETECTED_IN_BIOFLUID, ASSOCIATED_WITH_DISEASE, and HAS_ONTOLOGY_TERM.
+
+[DEBUG] Generating Neo4j query for plan: entities=[Entity(name='depression', type='Disease', confidence=0.9), Entity(name='cerebrospinal fluid', type='Biofluid', confidence=0.9), Entity(name='neurotransmission', type='OntologyTerm', confidence=0.7)] query_intent='find relationships between entities related to neurotransmission' should_query=True reasoning="The user is asking about the roles of entities in neurotransmission. Given the extracted entities 'depression' as Disease, 'cerebrospinal fluid' as Biofluid, and 'neurotransmission' as OntologyTerm, it is reasonable to infer that the user is interested in understanding how these entities are connected to neurotransmission. The database schema supports querying relationships involving these entities through various relationships such as DETECTED_IN_BIOFLUID, ASSOCIATED_WITH_DISEASE, and HAS_ONTOLOGY_TERM."
+
+[DEBUG] Generated query: ```cypher
+MATCH (d:Disease {diseaseName: 'depression'})<-[:ASSOCIATED_WITH_DISEASE]-(m:Metabolite)-[:DETECTED_IN_BIOFLUID]->(bf:Biofluid {biofluidName: 'cerebrospinal fluid'})
+RETURN m.name AS metabolite_name, d.diseaseName AS disease_name, bf.biofluidName AS biofluid_name;
+```
+
+[DEBUG] Cleaned query for execution: MATCH (d:Disease {diseaseName: 'depression'})<-[:ASSOCIATED_WITH_DISEASE]-(m:Metabolite)-[:DETECTED_IN_BIOFLUID]->(bf:Biofluid {biofluidName: 'cerebrospinal fluid'})
+RETURN m.name AS metabolite_name, d.diseaseName AS disease_name, bf.biofluidName AS biofluid_name;
+
+[DEBUG] Executing Neo4j query...
+
+[DEBUG] Cleaned query for execution: MATCH (d:Disease {diseaseName: 'depression'})<-[:ASSOCIATED_WITH_DISEASE]-(m:Metabolite)-[:DETECTED_IN_BIOFLUID]->(bf:Biofluid {biofluidName: 'cerebrospinal fluid'})
+RETURN m.name AS metabolite_name, d.diseaseName AS disease_name, bf.biofluidName AS biofluid_name;
+
+[DEBUG] Neo4j raw query results: []
+
+[DEBUG] Need API fallback? True
+
+[DEBUG] No results found in database or API
+
+[DEBUG] Generated query: ```cypher
+MATCH (d:Disease {diseaseName: 'depression'})-[:ASSOCIATED_WITH_DISEASE]-(m:Metabolite),
+      (m)-[:DETECTED_IN_BIOFLUID]->(bf:Biofluid {biofluidName: 'cerebrospinal fluid'}),
+      (m)-[:HAS_ONTOLOGY_TERM]->(ot:OntologyTerm {termName: 'neurotransmission'})
+RETURN d.diseaseName, m.name, bf.biofluidName, ot.termName;
+```
+
+[DEBUG] Cleaned query for execution: MATCH (d:Disease {diseaseName: 'depression'})-[:ASSOCIATED_WITH_DISEASE]-(m:Metabolite),
+      (m)-[:DETECTED_IN_BIOFLUID]->(bf:Biofluid {biofluidName: 'cerebrospinal fluid'}),
+      (m)-[:HAS_ONTOLOGY_TERM]->(ot:OntologyTerm {termName: 'neurotransmission'})
+RETURN d.diseaseName, m.name, bf.biofluidName, ot.termName;
+
+[DEBUG] Executing Neo4j query...
+
+[DEBUG] Cleaned query for execution: MATCH (d:Disease {diseaseName: 'depression'})-[:ASSOCIATED_WITH_DISEASE]-(m:Metabolite),
+      (m)-[:DETECTED_IN_BIOFLUID]->(bf:Biofluid {biofluidName: 'cerebrospinal fluid'}),
+      (m)-[:HAS_ONTOLOGY_TERM]->(ot:OntologyTerm {termName: 'neurotransmission'})
+RETURN d.diseaseName, m.name, bf.biofluidName, ot.termName;
+
+[DEBUG] Neo4j raw query results: []
+
+[DEBUG] Need API fallback? True
+
+[DEBUG] No results found in database or API
+INFO:httpx:HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+
+[DEBUG] Selected entity: Cerebrospinal fluid
+[DEBUG] All extracted entities: {'Like serotonin', 'Cerebrospinal fluid', 'Depression', 'Metabolites in Cerebrospinal Fluid'}
+[DEBUG] Stored memory with entity: Cerebrospinal fluid
+[DEBUG] Stored raw data types: ['entity_extraction']
+
+[DEBUG] Memory relevance ranking:
+  1. Score: 0.40
+     Query: For HMDB0000122, list biofluids it appears in, its typical concentrations, and its metabolic function.
+     Entity: HMDB0000122
+     Components: {'entity_match': 0.0, 'keyword_similarity': 0.02608695652173913, 'tag_match': 0.15, 'recency': 0.09000000000000001, 'ambiguity_boost': 0.13333333333333336}
+  2. Score: 0.34
+     Query: Which metabolites found in urine are associated with neurological disorders and what are their typical concentrations?
+     Entity: Associated Metabolites
+
+Research
+     Components: {'entity_match': 0.0, 'keyword_similarity': 0.03913043478260869, 'tag_match': 0.15, 'recency': 0.08000000000000002, 'ambiguity_boost': 0.06666666666666668}
+  3. Score: 0.31
+     Query: Which metabolites linked to depression are found in cerebrospinal fluid, and what are their roles in neurotransmission?
+     Entity: Cerebrospinal fluid
+     Components: {'entity_match': 0.0, 'keyword_similarity': 0.013043478260869565, 'tag_match': 0.0, 'recency': 0.1, 'ambiguity_boost': 0.2}
+
+[DEBUG] Found 3 relevant turns for: 'Give me the synonyms for lactate and also show me the diseases associated with it.
+5.Give me information about HMDB0250793
+6.what is the chemical formula of serotonin?'
+[INFO] Decision for query 'Give me the synonyms for lactate and also show me the diseases associated with it.
+5.Give me information about HMDB0250793
+6.what is the chemical formula of serotonin?': pipeline
+INFO:     127.0.0.1:62216 - "POST /query HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+
+[DEBUG] Multiple intents detected: 'Give me the synonyms for lactate' (GetSynonyms), 'diseases associated with it' (GetDisease)
+INFO:httpx:HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+
+[DEBUG] Entity Extraction Response: {"entities": [
+  {"name": "lactate", "type": "Metabolite", "confidence": 0.95},
+  {"name": "synonyms", "type": "Synonym", "confidence": 0.9},
+  {"name": "diseases", "type": "Disease", "confidence": 0.85},
+  {"name": "HMDB0250793", "type": "Metabolite", "confidence": 0.9},
+  {"name": "serotonin", "type": "Metabolite", "confidence": 0.9},
+  {"name": "chemical formula", "type": "chemical_formula", "confidence": 0.8}
+]}
+
+[DEBUG] Processing sub-intent: GetSynonyms - 'Give me the synonyms for lactate'
+
+[DEBUG] Reusing entity extraction results: entities=[Entity(name='lactate', type='Metabolite', confidence=0.95), Entity(name='synonyms', type='Synonym', confidence=0.9), Entity(name='diseases', type='Disease', confidence=0.85), Entity(name='HMDB0250793', type='Metabolite', confidence=0.9), Entity(name='serotonin', type='Metabolite', confidence=0.9), Entity(name='chemical formula', type='chemical_formula', confidence=0.8)]
+
+[DEBUG] Extracted metabolites: ['lactate', 'HMDB0250793', 'serotonin']
+
+[DEBUG] Starting query planning for: Give me the synonyms for lactate
+
+[DEBUG] Processing sub-intent: GetDisease - 'diseases associated with it'
+
+[DEBUG] Reusing entity extraction results: entities=[Entity(name='lactate', type='Metabolite', confidence=0.95), Entity(name='synonyms', type='Synonym', confidence=0.9), Entity(name='diseases', type='Disease', confidence=0.85), Entity(name='HMDB0250793', type='Metabolite', confidence=0.9), Entity(name='serotonin', type='Metabolite', confidence=0.9), Entity(name='chemical formula', type='chemical_formula', confidence=0.8)]
+
+[DEBUG] Extracted metabolites: ['lactate', 'HMDB0250793', 'serotonin']
+
+[DEBUG] Starting query planning for: diseases associated with it
+
+[DEBUG] Query plan response: ```json
+{
+    "entities": [
+        {
+            "name": "lactate",
+            "type": "Metabolite",
+            "confidence": 0.95
+        },
+        {
+            "name": "diseases",
+            "type": "Disease",
+            "confidence": 0.85
+        }
+    ],
+    "query_intent": "find relationships between entities",
+    "should_query": true,
+    "reasoning": "The user is asking about diseases associated with a metabolite (lactate). Given the schema, there is a relationship defined as [:ASSOCIATED_WITH_DISEASE] from (:Metabolite) to (:Disease), which can be queried to find the associated diseases."
+}
+```
+
+[DEBUG] Parsed query plan: should_query=True, intent=find relationships between entities
+
+[DEBUG] Query execution required: The user is asking about diseases associated with a metabolite (lactate). Given the schema, there is a relationship defined as [:ASSOCIATED_WITH_DISEASE] from (:Metabolite) to (:Disease), which can be queried to find the associated diseases.
+
+[DEBUG] Generating Neo4j query for plan: entities=[Entity(name='lactate', type='Metabolite', confidence=0.95), Entity(name='diseases', type='Disease', confidence=0.85)] query_intent='find relationships between entities' should_query=True reasoning='The user is asking about diseases associated with a metabolite (lactate). Given the schema, there is a relationship defined as [:ASSOCIATED_WITH_DISEASE] from (:Metabolite) to (:Disease), which can be queried to find the associated diseases.'
+
+[DEBUG] Query plan response: ```json
+{
+    "entities": [
+        {
+            "name": "lactate",
+            "type": "Metabolite",
+            "confidence": 0.95
+        },
+        {
+            "name": "synonyms",
+            "type": "Synonym",
+            "confidence": 0.9
+        }
+    ],
+    "query_intent": "get properties of entity",
+    "should_query": true,
+    "reasoning": "The user is asking for synonyms related to 'lactate', which is identified as a Metabolite. According to the schema, a Metabolite can have Synonyms through the relationship :HAS_SYNONYM. Therefore, the Neo4j database can be queried to retrieve the synonyms associated with the Metabolite named 'lactate'. Other entities like 'diseases', 'HMDB0250793', 'serotonin', and 'chemical formula' are not relevant to the user's query and hence are excluded."
+}
+```
+
+[DEBUG] Parsed query plan: should_query=True, intent=get properties of entity
+
+[DEBUG] Query execution required: The user is asking for synonyms related to 'lactate', which is identified as a Metabolite. According to the schema, a Metabolite can have Synonyms through the relationship :HAS_SYNONYM. Therefore, the Neo4j database can be queried to retrieve the synonyms associated with the Metabolite named 'lactate'. Other entities like 'diseases', 'HMDB0250793', 'serotonin', and 'chemical formula' are not relevant to the user's query and hence are excluded.
+
+[DEBUG] Generating Neo4j query for plan: entities=[Entity(name='lactate', type='Metabolite', confidence=0.95), Entity(name='synonyms', type='Synonym', confidence=0.9)] query_intent='get properties of entity' should_query=True reasoning="The user is asking for synonyms related to 'lactate', which is identified as a Metabolite. According to the schema, a Metabolite can have Synonyms through the relationship :HAS_SYNONYM. Therefore, the Neo4j database can be queried to retrieve the synonyms associated with the Metabolite named 'lactate'. Other entities like 'diseases', 'HMDB0250793', 'serotonin', and 'chemical formula' are not relevant to the user's query and hence are excluded."
+
+[DEBUG] Generated query: ```cypher
+MATCH (m:Metabolite)
+WHERE toLower(m.name) = toLower('lactate') 
+OR EXISTS { MATCH (m)-[:HAS_SYNONYM]->(s:Synonym) 
+            WHERE toLower(s.synonymText) = toLower('lactate') }
+MATCH (m)-[:ASSOCIATED_WITH_DISEASE]->(d:Disease)
+RETURN m.name AS metabolite_name, d.diseaseName AS disease_name;
+```
+
+[DEBUG] Cleaned query for execution: MATCH (m:Metabolite)
+WHERE toLower(m.name) = toLower('lactate') 
+OR EXISTS { MATCH (m)-[:HAS_SYNONYM]->(s:Synonym) 
+            WHERE toLower(s.synonymText) = toLower('lactate') }
+MATCH (m)-[:ASSOCIATED_WITH_DISEASE]->(d:Disease)
+RETURN m.name AS metabolite_name, d.diseaseName AS disease_name;
+
+[DEBUG] Executing Neo4j query...
+
+[DEBUG] Cleaned query for execution: MATCH (m:Metabolite)
+WHERE toLower(m.name) = toLower('lactate') 
+OR EXISTS { MATCH (m)-[:HAS_SYNONYM]->(s:Synonym) 
+            WHERE toLower(s.synonymText) = toLower('lactate') }
+MATCH (m)-[:ASSOCIATED_WITH_DISEASE]->(d:Disease)
+RETURN m.name AS metabolite_name, d.diseaseName AS disease_name;
+
+[DEBUG] Neo4j raw query results: [{'metabolite_name': 'L-Lactic acid', 'disease_name': '2,4-dienoyl-CoA reductase deficiency'}, {'metabolite_name': 'L-Lactic acid', 'disease_name': 'Methylmalonic aciduria mitochondrial encephelopathy Leigh-like'}, {'metabolite_name': 'Indoleacetic acid', 'disease_name': 'Tooth Decay'}, {'metabolite_name': 'Indoleacetic acid', 'disease_name': 'Anorexia nervosa'}, {'metabolite_name': 'Indoleacetic acid', 'disease_name': 'Uremia'}, {'metabolite_name': 'L-Lactic acid', 'disease_name': 'Amish lethal microcephaly'}, {'metabolite_name': 'L-Lactic acid', 'disease_name': 'Diabetes mellitus type 1'}, {'metabolite_name': 'L-Lactic acid', 'disease_name': 'Autosomal  dominant polycystic kidney disease'}, {'metabolite_name': 'L-Lactic acid', 'disease_name': 'Paraquat poisoning'}, {'metabolite_name': 'L-Lactic acid', 'disease_name': 'Deafness, Onychodystrophy, Osteodystrophy, Mental Retardation, and Seizures Syndrome'}, {'metabolite_name': 'Indoleacetic acid', 'disease_name': 'Major depressive disorder'}, {'metabolite_name': 'L-Lactic acid', 'disease_name': '2-Methyl-3-hydroxybutyryl-CoA dehydrogenase deficiency'}, {'metabolite_name': 'L-Lactic acid', 'disease_name': 'Fructose-1,6-diphosphatase deficiency'}, {'metabolite_name': 'L-Lactic acid', 'disease_name': "Leigh's syndrome, subacute necrotizing encephalopathy, SNE"}, {'metabolite_name': 'L-Lactic acid', 'disease_name': 'Hyperglycinemia, lactic acidosis, and seizures'}, {'metabolite_name': 'L-Lactic acid', 'disease_name': 'Lipoyltransferase 1 Deficiency'}, {'metabolite_name': 'L-Lactic acid', 'disease_name': 'Temporomandibular joint disorder'}, {'metabolite_name': 'L-Lactic acid', 'disease_name': 'Coenzyme Q10 deficiency, primary, 5'}, {'metabolite_name': 'L-Lactic acid', 'disease_name': 'Mitochondrial pyruvate carrier deficiency'}, {'metabolite_name': 'L-Lactic acid', 'disease_name': 'Early preeclampsia'}, {'metabolite_name': 'L-Lactic acid', 'disease_name': 'Pregnancy'}, {'metabolite_name': 'L-Lactic acid', 'disease_name': 'Late-onset preeclampsia'}, {'metabolite_name': 'L-Lactic acid', 'disease_name': "Alzheimer's disease"}, {'metabolite_name': 'D-Lactic acid', 'disease_name': 'Diabetes mellitus type 2'}, {'metabolite_name': 'L-Lactic acid', 'disease_name': 'Propionic acidemia'}, {'metabolite_name': 'Indoleacetic acid', 'disease_name': 'Eosinophilic esophagitis'}, {'metabolite_name': 'L-Lactic acid', 'disease_name': 'Eosinophilic esophagitis'}, {'metabolite_name': 'L-Lactic acid', 'disease_name': 'Colorectal cancer'}, {'metabolite_name': 'Indoleacetic acid', 'disease_name': 'Colorectal cancer'}, {'metabolite_name': 'D-Lactic acid', 'disease_name': 'Schizophrenia'}, {'metabolite_name': 'L-Lactic acid', 'disease_name': 'Schizophrenia'}, {'metabolite_name': 'L-Lactic acid', 'disease_name': 'Frontotemporal dementia'}, {'metabolite_name': 'L-Lactic acid', 'disease_name': 'Lewy body disease'}, {'metabolite_name': 'L-Lactic acid', 'disease_name': 'Pyruvate dehydrogenase deficiency'}, {'metabolite_name': 'L-Lactic acid', 'disease_name': 'Dihydrolipoamide Dehydrogenase Deficiency'}, {'metabolite_name': 'L-Lactic acid', 'disease_name': 'Pancreatic cancer'}, {'metabolite_name': 'L-Lactic acid', 'disease_name': '2-Ketoglutarate dehydrogenase complex deficiency'}, {'metabolite_name': 'L-Lactic acid', 'disease_name': '3-Hydroxy-3-Methylglutaryl-CoA Synthase Deficiency'}, {'metabolite_name': 'L-Lactic acid', 'disease_name': '3-Hydroxyacyl-CoA dehydrogenase deficiency'}, {'metabolite_name': 'L-Lactic acid', 'disease_name': '3-Hydroxy-3-methylglutaryl-CoA lyase deficiency'}, {'metabolite_name': 'L-Lactic acid', 'disease_name': 'Pyruvate dehydrogenase phosphatase deficiency'}, {'metabolite_name': 'L-Lactic acid', 'disease_name': 'Anoxia'}, {'metabolite_name': 'L-Lactic acid', 'disease_name': 'Ulcerative colitis'}, {'metabolite_name': 'L-Lactic acid', 'disease_name': "Crohn's disease"}, {'metabolite_name': 'L-Lactic acid', 'disease_name': 'Pyruvate carboxylase deficiency'}, {'metabolite_name': 'L-Lactic acid', 'disease_name': 'Dementia'}, {'metabolite_name': 'L-Lactic acid', 'disease_name': 'Attachment loss'}, {'metabolite_name': 'L-Lactic acid', 'disease_name': 'Periodontal Probing Depth'}, {'metabolite_name': 'Indoleacetic acid', 'disease_name': 'Irritable bowel syndrome'}, {'metabolite_name': 'L-Lactic acid', 'disease_name': 'Irritable bowel syndrome'}, {'metabolite_name': 'Indoleacetic acid', 'disease_name': 'Autism'}, {'metabolite_name': 'L-Lactic acid', 'disease_name': 'Missing teeth'}, {'metabolite_name': 'L-Lactic acid', 'disease_name': 'Sulfite oxidase deficiency, ISOLATED'}, {'metabolite_name': 'L-Lactic acid', 'disease_name': 'Mitochondrial complex I deficiency due to ACAD9 deficiency'}, {'metabolite_name': 'L-Lactic acid', 'disease_name': 'Pearson Syndrome'}, {'metabolite_name': 'L-Lactic acid', 'disease_name': 'Metabolic encephalomyopathic crises, recurrent, with rhabdomyolysis, cardiac arrhythmias, and neurodegeneration'}, {'metabolite_name': 'L-Lactic acid', 'disease_name': 'Mitochondrial trifunctional protein deficiency'}]
+
+[DEBUG] Need API fallback? False
+
+[DEBUG] Additional description results: [{'m.description': 'Serotonin or 5-hydroxytryptamine (5-HT) is a molecule that belongs to the class of compounds known as indoleamines. An indoleamine consists of an indole ring that bears an amino group or an alkyl amino group attached to the indole ring. Serotonin has an aminoethyl at position 2 and a hydroxyl group at position 5 of the indole ring. Serotonin exists in all living organisms, ranging from bacteria to plants to humans. In mammals, serotonin functions as a monoamine neurotransmitter, a biochemical messenger and regulator. It is synthesized from the essential amino acid L-Tryptophan. Approximately 90% of the human body\'s total serotonin is located in the enterochromaffin cells in the GI tract, where it regulates intestinal movements. About 8% is found in platelets and 1‚Äì2% in the CNS. Serotonin in the nervous system acts as a local transmitter at synapses, and as a paracrine or hormonal modulator of circuits upon diffusion, allowing a wide variety of "state-dependent" behavioral responses to different stimuli. Serotonin is widely distributed in the nervous system of vertebrates and invertebrates and some of its behavioral effects have been preserved along evolution. Such is the case of aggressive behavior and rhythmic motor patterns, including those responsible for feeding.  In vertebrates, which display a wider and much more sophisticated behavioral repertoire, serotonin also modulates sleep, the arousal state, sexual behavior, and others. Deficiencies of the serotonergic system causes disorders such as depression, obsessive-compulsive disorder, phobias, posttraumatic stress disorder, epilepsy, and generalized anxiety disorder. Serotonin has three different modes of action in the nervous system: as transmitter, acting locally at synaptic boutons; upon diffusion at a distance from its release sites, producing paracrine (also called volume) effects, and by circulating in the blood stream, producing hormonal effects. The three modes can affect a single neuronal circuit. (PMID: 16047543). Serotonin is also a microbial metabolite that can be found in the feces and urine of mammals. Urinary serotonin is produced by Candida, Streptococcus, Escherichia, and Enterococcus (PMID: 24621061). In plants, serotonin was first found and reported in a legume called Mucuna pruriens. The greatest concentration of serotonin in plants has been found in walnuts and hickory. In pineapples, banana, kiwi fruit, plums and tomatoes the concentration of serotonin is around 3 to 30 mg/kg.'}]
+
+[DEBUG] Generating summary from Neo4j results...
+
+[DEBUG] Generated query: ```cypher
+MATCH (m:Metabolite)
+WHERE toLower(m.name) = toLower('lactate') 
+OR EXISTS { MATCH (m)-[:HAS_SYNONYM]->(s:Synonym) 
+            WHERE toLower(s.synonymText) = toLower('lactate') }
+OPTIONAL MATCH (m)-[:HAS_SYNONYM]->(s:Synonym)
+RETURN m.name, collect(DISTINCT s.synonymText) AS synonyms;
+```
+
+[DEBUG] Cleaned query for execution: MATCH (m:Metabolite)
+WHERE toLower(m.name) = toLower('lactate') 
+OR EXISTS { MATCH (m)-[:HAS_SYNONYM]->(s:Synonym) 
+            WHERE toLower(s.synonymText) = toLower('lactate') }
+OPTIONAL MATCH (m)-[:HAS_SYNONYM]->(s:Synonym)
+RETURN m.name, collect(DISTINCT s.synonymText) AS synonyms;
+
+[DEBUG] Executing Neo4j query...
+
+[DEBUG] Cleaned query for execution: MATCH (m:Metabolite)
+WHERE toLower(m.name) = toLower('lactate') 
+OR EXISTS { MATCH (m)-[:HAS_SYNONYM]->(s:Synonym) 
+            WHERE toLower(s.synonymText) = toLower('lactate') }
+OPTIONAL MATCH (m)-[:HAS_SYNONYM]->(s:Synonym)
+RETURN m.name, collect(DISTINCT s.synonymText) AS synonyms;
+
+[DEBUG] Neo4j raw query results: [{'m.name': 'L-Lactic acid', 'synonyms': ['(S)-2-Hydroxypropanoic acid', 'Lactic acid', 'D-Lactic acid', '(S)-(+)-2-Hydroxypropanoate', 'Lactate', 'Lactate, ammonium', '2-Hydroxypropionic acid', '(S)-2-Hydroxypropionate', '2 Hydroxypropionic acid', 'L-Lactic acid', '1-Hydroxyethanecarboxylic acid', 'Ammonium lactate', 'L-2-Hydroxypropanoic acid', '(S)-Lactate', '(S)-(+)-2-Hydroxypropanoic acid', 'L-(+)-Lactic acid', 'L Lactic acid', 'Sarcolactic acid', '(S)-(+)-Lactic acid', '(alpha)-Lactate', 'alpha-Hydroxypropionate', 'L-(+)- Lactic acid', '(S)-Lactic acid', 'alpha-Hydroxypropionic acid', 'D Lactic acid', 'a-Hydroxypropanoic acid', 'alpha-Hydroxypropanoate', 'a-Hydroxypropionate', '1-Hydroxyethanecarboxylate', '(S)-2-Hydroxy-propanoic acid', 'L-(+)-Lactate', 'L-(+)-alpha-Hydroxypropionic acid', '1-Hydroxyethane 1-carboxylate', 'L-2-Hydroxypropanoate', '1-Hydroxyethane 1-carboxylic acid', '2-Hydroxypropanoic acid', '(S)-2-Hydroxypropionic acid', 'L-Milchsaeure', '(+)-Lactic acid', '2-Hydroxypropanoate', 'D-Lactate', '2-Hydroxypropionate', 'L-(+)-Α-hydroxypropionate', '(S)-(+)-Lactate', 'L-(+)-a-Hydroxypropionate', 'L-Lactate', 'a-Hydroxypropionic acid', '(+)-Lactate', 'L-(+)-alpha-Hydroxypropionate', '(S)-2-Hydroxypropanoate', 'L-(+)-Α-hydroxypropionic acid', 'L-(+)-a-Hydroxypropionic acid', '(S)-2-Hydroxy-propanoate', '(alpha)-Lactic acid', 'Milk acid', '2 Hydroxypropanoic acid', 'a-Hydroxypropanoate', 'alpha-Hydroxypropanoic acid']}]
+
+[DEBUG] Need API fallback? False
+Using cached result for query: 
+                                MATCH (m:Metaboli...
+Using cached result for query: 
+                                MATCH (m:Metaboli...
+Using cached result for query: 
+                                MATCH (m:Metaboli...
+
+[DEBUG] Additional description results: [{'m.description': 'Serotonin or 5-hydroxytryptamine (5-HT) is a molecule that belongs to the class of compounds known as indoleamines. An indoleamine consists of an indole ring that bears an amino group or an alkyl amino group attached to the indole ring. Serotonin has an aminoethyl at position 2 and a hydroxyl group at position 5 of the indole ring. Serotonin exists in all living organisms, ranging from bacteria to plants to humans. In mammals, serotonin functions as a monoamine neurotransmitter, a biochemical messenger and regulator. It is synthesized from the essential amino acid L-Tryptophan. Approximately 90% of the human body\'s total serotonin is located in the enterochromaffin cells in the GI tract, where it regulates intestinal movements. About 8% is found in platelets and 1‚Äì2% in the CNS. Serotonin in the nervous system acts as a local transmitter at synapses, and as a paracrine or hormonal modulator of circuits upon diffusion, allowing a wide variety of "state-dependent" behavioral responses to different stimuli. Serotonin is widely distributed in the nervous system of vertebrates and invertebrates and some of its behavioral effects have been preserved along evolution. Such is the case of aggressive behavior and rhythmic motor patterns, including those responsible for feeding.  In vertebrates, which display a wider and much more sophisticated behavioral repertoire, serotonin also modulates sleep, the arousal state, sexual behavior, and others. Deficiencies of the serotonergic system causes disorders such as depression, obsessive-compulsive disorder, phobias, posttraumatic stress disorder, epilepsy, and generalized anxiety disorder. Serotonin has three different modes of action in the nervous system: as transmitter, acting locally at synaptic boutons; upon diffusion at a distance from its release sites, producing paracrine (also called volume) effects, and by circulating in the blood stream, producing hormonal effects. The three modes can affect a single neuronal circuit. (PMID: 16047543). Serotonin is also a microbial metabolite that can be found in the feces and urine of mammals. Urinary serotonin is produced by Candida, Streptococcus, Escherichia, and Enterococcus (PMID: 24621061). In plants, serotonin was first found and reported in a legume called Mucuna pruriens. The greatest concentration of serotonin in plants has been found in walnuts and hickory. In pineapples, banana, kiwi fruit, plums and tomatoes the concentration of serotonin is around 3 to 30 mg/kg.'}]
+
+[DEBUG] Generating summary from Neo4j results...
+INFO:httpx:HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:httpx:HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+
+[DEBUG] Neo4j summary generated successfully
+
+[DEBUG] Neo4j summary generated successfully
+INFO:httpx:HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+
+[DEBUG] Selected entity: HMDB0250793
+[DEBUG] All extracted entities: {'Lactic acid', 'HMDB0250793', 'serotonin', 'Human Metabolome Database', 'It', 'lactate', 'Hydroxytryptamine'}
+[DEBUG] Stored memory with entity: HMDB0250793
+[DEBUG] Stored raw data types: ['entity_extraction']
+INFO:     127.0.0.1:62280 - "OPTIONS /query HTTP/1.1" 200 OK
+
+[DEBUG] Memory relevance ranking:
+  1. Score: 0.53
+     Query: Give me the synonyms for lactate and also show me the diseases associated with it.
+5.Give me information about HMDB0250793
+6.what is the chemical formula of serotonin?
+     Entity: HMDB0250793
+     Components: {'entity_match': 0.0, 'keyword_similarity': 0.07826086956521738, 'tag_match': 0.15, 'recency': 0.1, 'ambiguity_boost': 0.2}
+  2. Score: 0.30
+     Query: For HMDB0000122, list biofluids it appears in, its typical concentrations, and its metabolic function.
+     Entity: HMDB0000122
+     Components: {'entity_match': 0.0, 'keyword_similarity': 0.0, 'tag_match': 0.15, 'recency': 0.08181818181818182, 'ambiguity_boost': 0.06666666666666668}
+  3. Score: 0.24
+     Query: Which metabolites linked to depression are found in cerebrospinal fluid, and what are their roles in neurotransmission?
+     Entity: Cerebrospinal fluid
+     Components: {'entity_match': 0.0, 'keyword_similarity': 0.02, 'tag_match': 0.0, 'recency': 0.09090909090909091, 'ambiguity_boost': 0.13333333333333336}
+
+[DEBUG] Found 3 relevant turns for: 'what is the chemical formula of serotonin?'
+[INFO] Decision for query 'what is the chemical formula of serotonin?': general
+INFO:     127.0.0.1:62282 - "POST /query HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+
+[DEBUG] Memory relevance ranking:
+  1. Score: 0.49
+     Query: Give me the synonyms for lactate and also show me the diseases associated with it.
+5.Give me information about HMDB0250793
+6.what is the chemical formula of serotonin?
+     Entity: HMDB0250793
+     Components: {'entity_match': 0.0, 'keyword_similarity': 0.11739130434782608, 'tag_match': 0.15, 'recency': 0.09166666666666667, 'ambiguity_boost': 0.13333333333333336}
+  2. Score: 0.38
+     Query: what is the chemical formula of serotonin?
+     Entity: Hydroxytryptamine
+     Components: {'entity_match': 0.0, 'keyword_similarity': 0.07894736842105263, 'tag_match': 0.0, 'recency': 0.1, 'ambiguity_boost': 0.2}
+  3. Score: 0.33
+     Query: Which metabolites linked to depression are found in cerebrospinal fluid, and what are their roles in neurotransmission?
+     Entity: Cerebrospinal fluid
+     Components: {'entity_match': 0.0, 'keyword_similarity': 0.031578947368421054, 'tag_match': 0.15, 'recency': 0.08333333333333334, 'ambiguity_boost': 0.06666666666666668}
+
+[DEBUG] Found 3 relevant turns for: 'What is the main protein that interacts with arginine, also show me the chemical structure of arginine, and any relevant pathways.'
+[INFO] Decision for query 'What is the main protein that interacts with arginine, also show me the chemical structure of arginine, and any relevant pathways.': pipeline
+INFO:     127.0.0.1:62288 - "POST /query HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+
+[DEBUG] Multiple intents detected: 'What is the main protein that interacts with arginine' (GetRelationships), 'show me the chemical structure of arginine' (GetStructure), 'and any relevant pathways' (GetPathways)
+INFO:httpx:HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+
+[DEBUG] Entity Extraction Response: {"entities": [
+  {"name": "arginine", "type": "Metabolite", "confidence": 0.95},
+  {"name": "chemical structure", "type": "Synonym", "confidence": 0.85},
+  {"name": "pathways", "type": "Pathway", "confidence": 0.9}
+]}
+
+[DEBUG] Processing sub-intent: GetRelationships - 'What is the main protein that interacts with arginine'
+
+[DEBUG] Reusing entity extraction results: entities=[Entity(name='arginine', type='Metabolite', confidence=0.95), Entity(name='chemical structure', type='Synonym', confidence=0.85), Entity(name='pathways', type='Pathway', confidence=0.9)]
+
+[DEBUG] Extracted metabolites: ['arginine']
+
+[DEBUG] Starting query planning for: What is the main protein that interacts with arginine
+
+[DEBUG] Processing sub-intent: GetStructure - 'show me the chemical structure of arginine'
+
+[DEBUG] Reusing entity extraction results: entities=[Entity(name='arginine', type='Metabolite', confidence=0.95), Entity(name='chemical structure', type='Synonym', confidence=0.85), Entity(name='pathways', type='Pathway', confidence=0.9)]
+
+[DEBUG] Extracted metabolites: ['arginine']
+
+[DEBUG] Starting query planning for: show me the chemical structure of arginine
+
+[DEBUG] Processing sub-intent: GetPathways - 'and any relevant pathways'
+
+[DEBUG] Reusing entity extraction results: entities=[Entity(name='arginine', type='Metabolite', confidence=0.95), Entity(name='chemical structure', type='Synonym', confidence=0.85), Entity(name='pathways', type='Pathway', confidence=0.9)]
+
+[DEBUG] Extracted metabolites: ['arginine']
+
+[DEBUG] Starting query planning for: and any relevant pathways
+
+[DEBUG] Query plan response: ```json
+{
+    "entities": [
+        {
+            "name": "arginine",
+            "type": "Metabolite",
+            "confidence": 0.95
+        }
+    ],
+    "query_intent": "find relationships between entities",
+    "should_query": true,
+    "reasoning": "The user is asking about the main protein that interacts with arginine. Given the schema, we can use the :HAS_PROTEIN_ASSOCIATION relationship to find proteins associated with the metabolite 'arginine'. The entity 'arginine' is correctly identified as a Metabolite and exists in the schema. Other entities like 'chemical structure' and 'pathways' were not directly relevant to the query intent."
+}
+```
+
+[DEBUG] Parsed query plan: should_query=True, intent=find relationships between entities
+
+[DEBUG] Query execution required: The user is asking about the main protein that interacts with arginine. Given the schema, we can use the :HAS_PROTEIN_ASSOCIATION relationship to find proteins associated with the metabolite 'arginine'. The entity 'arginine' is correctly identified as a Metabolite and exists in the schema. Other entities like 'chemical structure' and 'pathways' were not directly relevant to the query intent.
+
+[DEBUG] Generating Neo4j query for plan: entities=[Entity(name='arginine', type='Metabolite', confidence=0.95)] query_intent='find relationships between entities' should_query=True reasoning="The user is asking about the main protein that interacts with arginine. Given the schema, we can use the :HAS_PROTEIN_ASSOCIATION relationship to find proteins associated with the metabolite 'arginine'. The entity 'arginine' is correctly identified as a Metabolite and exists in the schema. Other entities like 'chemical structure' and 'pathways' were not directly relevant to the query intent."
+
+[DEBUG] Query plan response: ```json
+{
+    "entities": [
+        {
+            "name": "arginine",
+            "type": "Metabolite",
+            "confidence": 0.95
+        },
+        {
+            "name": "chemical structure",
+            "type": "Synonym",
+            "confidence": 0.85
+        }
+    ],
+    "query_intent": "get properties of entity",
+    "should_query": true,
+    "reasoning": "The user is asking for the chemical structure of arginine, which can be interpreted as a property or synonym associated with the Metabolite 'arginine'. The entity 'arginine' exists in the schema as a Metabolite, and 'chemical structure' can be considered a Synonym. The entity 'pathways' was not included as it does not directly relate to the chemical structure of arginine."
+}
+```
+
+[DEBUG] Parsed query plan: should_query=True, intent=get properties of entity
+
+[DEBUG] Query execution required: The user is asking for the chemical structure of arginine, which can be interpreted as a property or synonym associated with the Metabolite 'arginine'. The entity 'arginine' exists in the schema as a Metabolite, and 'chemical structure' can be considered a Synonym. The entity 'pathways' was not included as it does not directly relate to the chemical structure of arginine.
+
+[DEBUG] Generating Neo4j query for plan: entities=[Entity(name='arginine', type='Metabolite', confidence=0.95), Entity(name='chemical structure', type='Synonym', confidence=0.85)] query_intent='get properties of entity' should_query=True reasoning="The user is asking for the chemical structure of arginine, which can be interpreted as a property or synonym associated with the Metabolite 'arginine'. The entity 'arginine' exists in the schema as a Metabolite, and 'chemical structure' can be considered a Synonym. The entity 'pathways' was not included as it does not directly relate to the chemical structure of arginine."
+
+[DEBUG] Query plan response: ```json
+{
+    "entities": [
+        {
+            "name": "arginine",
+            "type": "Metabolite",
+            "confidence": 0.95
+        },
+        {
+            "name": "pathways",
+            "type": "Pathway",
+            "confidence": 0.9
+        }
+    ],
+    "query_intent": "find relationships between entities",
+    "should_query": true,
+    "reasoning": "The user is interested in finding pathways related to arginine. Given that 'arginine' is identified as a Metabolite and 'pathways' as Pathway, and considering the relationship [:INVOLVED_IN_PATHWAY] exists between Metabolite and Pathway in the schema, it is appropriate to query the Neo4j database to find the relevant pathways associated with arginine."
+}
+```
+
+[DEBUG] Parsed query plan: should_query=True, intent=find relationships between entities
+
+[DEBUG] Query execution required: The user is interested in finding pathways related to arginine. Given that 'arginine' is identified as a Metabolite and 'pathways' as Pathway, and considering the relationship [:INVOLVED_IN_PATHWAY] exists between Metabolite and Pathway in the schema, it is appropriate to query the Neo4j database to find the relevant pathways associated with arginine.
+
+[DEBUG] Generating Neo4j query for plan: entities=[Entity(name='arginine', type='Metabolite', confidence=0.95), Entity(name='pathways', type='Pathway', confidence=0.9)] query_intent='find relationships between entities' should_query=True reasoning="The user is interested in finding pathways related to arginine. Given that 'arginine' is identified as a Metabolite and 'pathways' as Pathway, and considering the relationship [:INVOLVED_IN_PATHWAY] exists between Metabolite and Pathway in the schema, it is appropriate to query the Neo4j database to find the relevant pathways associated with arginine."
+
+[DEBUG] Generated query: ```cypher
+MATCH (m:Metabolite)
+WHERE toLower(m.name) = toLower('arginine') 
+OR EXISTS { MATCH (m)-[:HAS_SYNONYM]->(s:Synonym) 
+            WHERE toLower(s.synonymText) = toLower('arginine') }
+MATCH (m)-[:HAS_PROTEIN_ASSOCIATION]->(p:Protein)
+RETURN m.name AS metabolite_name, p.protein_name AS protein_name, p.uniprot_id AS uniprot_id;
+```
+
+[DEBUG] Cleaned query for execution: MATCH (m:Metabolite)
+WHERE toLower(m.name) = toLower('arginine') 
+OR EXISTS { MATCH (m)-[:HAS_SYNONYM]->(s:Synonym) 
+            WHERE toLower(s.synonymText) = toLower('arginine') }
+MATCH (m)-[:HAS_PROTEIN_ASSOCIATION]->(p:Protein)
+RETURN m.name AS metabolite_name, p.protein_name AS protein_name, p.uniprot_id AS uniprot_id;
+
+[DEBUG] Executing Neo4j query...
+
+[DEBUG] Cleaned query for execution: MATCH (m:Metabolite)
+WHERE toLower(m.name) = toLower('arginine') 
+OR EXISTS { MATCH (m)-[:HAS_SYNONYM]->(s:Synonym) 
+            WHERE toLower(s.synonymText) = toLower('arginine') }
+MATCH (m)-[:HAS_PROTEIN_ASSOCIATION]->(p:Protein)
+RETURN m.name AS metabolite_name, p.protein_name AS protein_name, p.uniprot_id AS uniprot_id;
+
+[DEBUG] Neo4j raw query results: [{'metabolite_name': 'L-Arginine', 'protein_name': 'Ecto-ADP-ribosyltransferase 5', 'uniprot_id': 'Q96L15'}, {'metabolite_name': 'L-Arginine', 'protein_name': 'Nitric oxide synthase, inducible', 'uniprot_id': 'P35228'}, {'metabolite_name': 'L-Arginine', 'protein_name': 'Ecto-ADP-ribosyltransferase 4', 'uniprot_id': 'Q93070'}, {'metabolite_name': 'L-Arginine', 'protein_name': 'Probable arginine--tRNA ligase, mitochondrial', 'uniprot_id': 'Q5T160'}, {'metabolite_name': 'L-Arginine', 'protein_name': 'Arginine--tRNA ligase, cytoplasmic', 'uniprot_id': 'P54136'}, {'metabolite_name': 'L-Arginine', 'protein_name': 'High affinity cationic amino acid transporter 1', 'uniprot_id': 'P30825'}, {'metabolite_name': 'L-Arginine', 'protein_name': 'Carnosine synthase 1', 'uniprot_id': 'A5YM72'}, {'metabolite_name': 'L-Arginine', 'protein_name': 'NAD-dependent protein deacetylase sirtuin-6', 'uniprot_id': 'Q8N6T7'}, {'metabolite_name': 'L-Arginine', 'protein_name': 'Nitric oxide synthase, brain', 'uniprot_id': 'P29475'}, {'metabolite_name': 'L-Arginine', 'protein_name': 'Argininosuccinate synthase', 'uniprot_id': 'P00966'}, {'metabolite_name': 'L-Arginine', 'protein_name': 'Arginase-2, mitochondrial', 'uniprot_id': 'P78540'}, {'metabolite_name': 'L-Arginine', 'protein_name': 'Ecto-ADP-ribosyltransferase 3', 'uniprot_id': 'Q13508'}, {'metabolite_name': 'L-Arginine', 'protein_name': 'NOS1 mutant', 'uniprot_id': 'B3VK56'}, {'metabolite_name': 'L-Arginine', 'protein_name': '4F2 cell-surface antigen heavy chain', 'uniprot_id': 'P08195'}, {'metabolite_name': 'L-Arginine', 'protein_name': 'Argininosuccinate lyase', 'uniprot_id': 'P04424'}, {'metabolite_name': 'L-Arginine', 'protein_name': 'Y+L amino acid transporter 2', 'uniprot_id': 'Q92536'}, {'metabolite_name': 'L-Arginine', 'protein_name': 'Arginase-1', 'uniprot_id': 'P05089'}, {'metabolite_name': 'L-Arginine', 'protein_name': 'Arginine decarboxylase', 'uniprot_id': 'Q96A70'}, {'metabolite_name': 'L-Arginine', 'protein_name': 'Glycine amidinotransferase, mitochondrial', 'uniprot_id': 'P50440'}, {'metabolite_name': 'L-Arginine', 'protein_name': 'GPI-linked NAD(P)(+)--arginine ADP-ribosyltransferase 1', 'uniprot_id': 'P52961'}, {'metabolite_name': 'L-Arginine', 'protein_name': 'Protein-arginine deiminase type-3', 'uniprot_id': 'Q9ULW8'}, {'metabolite_name': 'L-Arginine', 'protein_name': 'Y+L amino acid transporter 1', 'uniprot_id': 'Q9UM01'}, {'metabolite_name': 'L-Arginine', 'protein_name': 'Protein-arginine deiminase type-4', 'uniprot_id': 'Q9UM07'}, {'metabolite_name': 'L-Arginine', 'protein_name': 'Nitric oxide synthase, endothelial', 'uniprot_id': 'P29474'}, {'metabolite_name': 'L-Arginine', 'protein_name': '[Protein ADP-ribosylarginine] hydrolase', 'uniprot_id': 'P54922'}]
+
+[DEBUG] Need API fallback? False
+
+[DEBUG] Additional description results: [{'m.description': "Arginine (Arg), also known as L-argninine, belongs to the class of organic compounds known as L-alpha-amino acids. These are alpha amino acids which have the L-configuration of the alpha-carbon atom. Amino acids are organic compounds that contain amino (‚ÄìNH2) and carboxyl (‚ÄìCOOH) functional groups, along with a side chain (R group) specific to each amino acid. L-asparagine is one of 20 proteinogenic amino acids, i.e., the amino acids used in the biosynthesis of proteins. Arginine is found in all organisms ranging from bacteria to plants to animals. Arginine is an essential amino acid that is physiologically active in the L-form. It is classified as a charged, basic, aliphatic amino acid. Arginine is considered to be a basic amino acid as it has a strongly basic guanidinium group. With a pKa of 12.48, the guanidinium group is positively charged in neutral, acidic, and even most basic environments. Because of the conjugation between the double bond and the nitrogen lone pairs, the positive charge is delocalized. This group is able to form multiple H-bonds. In mammals, arginine is formally classified as a semi-essential or conditionally essential amino acid, depending on the developmental stage and health status of the individual. Infants are unable to effectively synthesize arginine, making it nutritionally essential for infants. Adults, however, are able to synthesize arginine in the urea cycle. L-Arginine is an amino acid that has numerous functions in the body. It helps dispose of ammonia, is used to make compounds such as nitric oxide, creatine, L-glutamate, and L-proline, and it can be converted into glucose and glycogen if needed. Arginine also plays an important role in cell division, immunity and wound healing. Arginine is the immediate precursor of nitric oxide (NO), an important signaling molecule which can act as a second messenger, as well as an intercellular messenger which regulates vasodilation, and also has functions in the immune system's reaction to infection. Nitric oxide is made via the enzyme nitric oxide synthase (PMID 10690324). Arginine is also a precursor for several important nitrogen-containing compounds including urea, ornithine, and agmatine. Arginine is necessary for the synthesis of creatine and can be used for the synthesis of polyamines (mainly through ornithine and to a lesser degree through agmatine, citrulline, and glutamate.) The presence of asymmetric dimethylarginine (ADMA) in serum or plasma, a close relative of argninine, inhibits the nitric oxide synthase reaction. ADMA is considered a marker for vascular disease, just as L-arginine is considered a sign of a healthy endothelium. In large doses, L-arginine also stimulates the release of the hormones growth hormone and prolactin. Arginine is a known inducer of mTOR (mammalian target of rapamycin) and is responsible for inducing protein synthesis through the mTOR pathway. mTOR inhibition by rapamycin partially reduces arginine-induced protein synthesis (PMID: 20841502). Catabolic disease states such as sepsis, injury, and cancer cause an increase in arginine utilization, which can exceed normal body production, leading to arginine depletion. Arginine also activates AMP kinase (AMPK) which then stimulates skeletal muscle fatty acid oxidation and muscle glucose uptake, thereby increasing insulin secretion by pancreatic beta-cells (PMID: 21311355). Arginine is found in plant and animal proteins, such as dairy products, meat, poultry, fish, and nuts. The ratio of L-arginine to lysine is also important: soy and other plant proteins have more L-arginine than animal sources of protein."}, {'m.description': 'Not available'}, {'m.description': 'Dietary supplement, nutrient. Arginine (abbreviated as Arg or R) is an alpha-amino acid. The L-form is one of the 20 most common natural amino acids.'}]
+
+[DEBUG] Generating summary from Neo4j results...
+
+[DEBUG] Generated query: ```cypher
+MATCH (m:Metabolite)
+WHERE toLower(m.name) = toLower('arginine') 
+OR EXISTS { MATCH (m)-[:HAS_SYNONYM]->(s:Synonym) 
+            WHERE toLower(s.synonymText) = toLower('arginine') }
+OPTIONAL MATCH (m)-[:HAS_SYNONYM]->(s:Synonym)
+RETURN m.chemical_formula, collect(DISTINCT s.synonymText) AS synonyms;
+```
+
+[DEBUG] Cleaned query for execution: MATCH (m:Metabolite)
+WHERE toLower(m.name) = toLower('arginine') 
+OR EXISTS { MATCH (m)-[:HAS_SYNONYM]->(s:Synonym) 
+            WHERE toLower(s.synonymText) = toLower('arginine') }
+OPTIONAL MATCH (m)-[:HAS_SYNONYM]->(s:Synonym)
+RETURN m.chemical_formula, collect(DISTINCT s.synonymText) AS synonyms;
+
+[DEBUG] Executing Neo4j query...
+
+[DEBUG] Cleaned query for execution: MATCH (m:Metabolite)
+WHERE toLower(m.name) = toLower('arginine') 
+OR EXISTS { MATCH (m)-[:HAS_SYNONYM]->(s:Synonym) 
+            WHERE toLower(s.synonymText) = toLower('arginine') }
+OPTIONAL MATCH (m)-[:HAS_SYNONYM]->(s:Synonym)
+RETURN m.chemical_formula, collect(DISTINCT s.synonymText) AS synonyms;
+
+[DEBUG] Neo4j raw query results: [{'m.chemical_formula': 'C6H14N4O2', 'synonyms': ['Monohydrate DL-arginine acetate', '2-Amino-5-guanidinovalerate', 'Arg', '5-[(Aminoiminomethyl)amino]-L-norvaline', 'L-alpha-Amino-delta-guanidinovalerate', '(S)-2-Amino-5-[(aminoiminomethyl)amino]pentanoate', '(2S)-2-Amino-5-(carbamimidamido)pentanoic acid', '(2S)-2-Amino-5-guanidinopentanoic acid', 'L-Arg', '(S)-2-Amino-5-guanidinopentanoic acid', 'L-alpha-Amino-delta-guanidinovaleric acid', 'N5-(Aminoiminomethyl)-L-ornithine', 'L-(+)-Arginine', '2-Amino-5-guanidinovaleric acid', 'L Arginine', 'R', 'L-Isomer arginine', '(S)-2-Amino-5-[(aminoiminomethyl)amino]-pentanoic acid', 'DL Arginine acetate, monohydrate', '(S)-2-Amino-5-[(aminoiminomethyl)amino]-pentanoate', '(S)-2-Amino-5-guanidinovaleric acid', 'DL-Arginine acetate, monohydrate', '(S)-2-Amino-5-guanidinopentanoate', 'L-a-Amino-D-guanidinovaleric acid', '(S)-2-Amino-5-[(aminoiminomethyl)amino]pentanoic acid', 'L-a-Amino-D-guanidinovalerate', 'Arginine, L isomer', 'Hydrochloride, arginine', '(2S)-2-Amino-5-guanidinopentanoate', 'Arginine, L-isomer', '(2S)-2-Amino-5-(carbamimidamido)pentanoate', 'L-Arginin', 'Arginine hydrochloride', '(S)-2-Amino-5-guanidinovalerate', 'Arginine', 'Harg', '2-Amino-5-guanidinopentanoic acid', '2-Amino-5-guanidinopentanoate', '2-Amino-5-(carbamimidamido)pentanoate', 'Arginin', '2-Amino-5-(carbamimidamido)pentanoic acid']}, {'m.chemical_formula': 'C6H15ClN4O2', 'synonyms': ['R-Gene 10', 'L-Isomer arginine', 'Arginine, L isomer', 'DL Arginine acetate, monohydrate', 'Monohydrate DL-arginine acetate', 'Arginine, L-isomer', 'Arginine', 'L-Arginine hydrochloride', 'DL-Arginine acetate, monohydrate', 'L-Arginine', 'L Arginine', 'R-Gene', 'Arginine hydrochloride', 'Hydrochloride, arginine']}]
+
+[DEBUG] Need API fallback? False
+Using cached result for query: 
+                                MATCH (m:Metaboli...
+
+[DEBUG] Additional description results: [{'m.description': "Arginine (Arg), also known as L-argninine, belongs to the class of organic compounds known as L-alpha-amino acids. These are alpha amino acids which have the L-configuration of the alpha-carbon atom. Amino acids are organic compounds that contain amino (‚ÄìNH2) and carboxyl (‚ÄìCOOH) functional groups, along with a side chain (R group) specific to each amino acid. L-asparagine is one of 20 proteinogenic amino acids, i.e., the amino acids used in the biosynthesis of proteins. Arginine is found in all organisms ranging from bacteria to plants to animals. Arginine is an essential amino acid that is physiologically active in the L-form. It is classified as a charged, basic, aliphatic amino acid. Arginine is considered to be a basic amino acid as it has a strongly basic guanidinium group. With a pKa of 12.48, the guanidinium group is positively charged in neutral, acidic, and even most basic environments. Because of the conjugation between the double bond and the nitrogen lone pairs, the positive charge is delocalized. This group is able to form multiple H-bonds. In mammals, arginine is formally classified as a semi-essential or conditionally essential amino acid, depending on the developmental stage and health status of the individual. Infants are unable to effectively synthesize arginine, making it nutritionally essential for infants. Adults, however, are able to synthesize arginine in the urea cycle. L-Arginine is an amino acid that has numerous functions in the body. It helps dispose of ammonia, is used to make compounds such as nitric oxide, creatine, L-glutamate, and L-proline, and it can be converted into glucose and glycogen if needed. Arginine also plays an important role in cell division, immunity and wound healing. Arginine is the immediate precursor of nitric oxide (NO), an important signaling molecule which can act as a second messenger, as well as an intercellular messenger which regulates vasodilation, and also has functions in the immune system's reaction to infection. Nitric oxide is made via the enzyme nitric oxide synthase (PMID 10690324). Arginine is also a precursor for several important nitrogen-containing compounds including urea, ornithine, and agmatine. Arginine is necessary for the synthesis of creatine and can be used for the synthesis of polyamines (mainly through ornithine and to a lesser degree through agmatine, citrulline, and glutamate.) The presence of asymmetric dimethylarginine (ADMA) in serum or plasma, a close relative of argninine, inhibits the nitric oxide synthase reaction. ADMA is considered a marker for vascular disease, just as L-arginine is considered a sign of a healthy endothelium. In large doses, L-arginine also stimulates the release of the hormones growth hormone and prolactin. Arginine is a known inducer of mTOR (mammalian target of rapamycin) and is responsible for inducing protein synthesis through the mTOR pathway. mTOR inhibition by rapamycin partially reduces arginine-induced protein synthesis (PMID: 20841502). Catabolic disease states such as sepsis, injury, and cancer cause an increase in arginine utilization, which can exceed normal body production, leading to arginine depletion. Arginine also activates AMP kinase (AMPK) which then stimulates skeletal muscle fatty acid oxidation and muscle glucose uptake, thereby increasing insulin secretion by pancreatic beta-cells (PMID: 21311355). Arginine is found in plant and animal proteins, such as dairy products, meat, poultry, fish, and nuts. The ratio of L-arginine to lysine is also important: soy and other plant proteins have more L-arginine than animal sources of protein."}, {'m.description': 'Not available'}, {'m.description': 'Dietary supplement, nutrient. Arginine (abbreviated as Arg or R) is an alpha-amino acid. The L-form is one of the 20 most common natural amino acids.'}]
+
+[DEBUG] Generating summary from Neo4j results...
+
+[DEBUG] Generated query: ```cypher
+MATCH (m:Metabolite)
+WHERE toLower(m.name) = toLower('arginine') 
+OR EXISTS { MATCH (m)-[:HAS_SYNONYM]->(s:Synonym) 
+            WHERE toLower(s.synonymText) = toLower('arginine') }
+MATCH (m)-[:INVOLVED_IN_PATHWAY]->(p:Pathway)
+RETURN p.pathway_name;
+```
+
+[DEBUG] Cleaned query for execution: MATCH (m:Metabolite)
+WHERE toLower(m.name) = toLower('arginine') 
+OR EXISTS { MATCH (m)-[:HAS_SYNONYM]->(s:Synonym) 
+            WHERE toLower(s.synonymText) = toLower('arginine') }
+MATCH (m)-[:INVOLVED_IN_PATHWAY]->(p:Pathway)
+RETURN p.pathway_name;
+
+[DEBUG] Executing Neo4j query...
+
+[DEBUG] Cleaned query for execution: MATCH (m:Metabolite)
+WHERE toLower(m.name) = toLower('arginine') 
+OR EXISTS { MATCH (m)-[:HAS_SYNONYM]->(s:Synonym) 
+            WHERE toLower(s.synonymText) = toLower('arginine') }
+MATCH (m)-[:INVOLVED_IN_PATHWAY]->(p:Pathway)
+RETURN p.pathway_name;
+
+[DEBUG] Neo4j raw query results: [{'p.pathway_name': 'Ornithine Aminotransferase Deficiency (OAT Deficiency)'}, {'p.pathway_name': 'Hyperprolinemia Type I'}, {'p.pathway_name': 'Citrullinemia Type I'}, {'p.pathway_name': 'Argininosuccinic Aciduria'}, {'p.pathway_name': 'Urea Cycle'}, {'p.pathway_name': 'Ornithine Transcarbamylase Deficiency (OTC Deficiency)'}, {'p.pathway_name': 'Glycine, serine and threonine metabolism'}, {'p.pathway_name': 'Arginine and proline metabolism'}, {'p.pathway_name': '3-Phosphoglycerate dehydrogenase deficiency'}, {'p.pathway_name': 'Prolinemia Type II'}, {'p.pathway_name': 'Dimethylglycine Dehydrogenase Deficiency'}, {'p.pathway_name': 'Canavan Disease'}, {'p.pathway_name': 'Hypoacetylaspartia'}, {'p.pathway_name': 'Prolidase Deficiency (PD)'}, {'p.pathway_name': 'Hyperglycinemia, non-ketotic'}, {'p.pathway_name': 'Transcription/Translation'}, {'p.pathway_name': 'Dihydropyrimidine Dehydrogenase Deficiency (DHPD)'}, {'p.pathway_name': 'Hyperornithinemia with gyrate atrophy (HOGA)'}, {'p.pathway_name': 'L-arginine:glycine amidinotransferase deficiency'}, {'p.pathway_name': 'Argininemia'}, {'p.pathway_name': 'Dimethylglycine Dehydrogenase Deficiency'}, {'p.pathway_name': 'Hyperprolinemia Type II'}, {'p.pathway_name': 'Carbamoyl Phosphate Synthetase Deficiency'}, {'p.pathway_name': 'Hyperornithinemia-hyperammonemia-homocitrullinuria [HHH-syndrome]'}, {'p.pathway_name': 'Aspartate Metabolism'}, {'p.pathway_name': 'Arginine: Glycine Amidinotransferase Deficiency (AGAT Deficiency)'}, {'p.pathway_name': 'Guanidinoacetate Methyltransferase Deficiency (GAMT Deficiency)'}, {'p.pathway_name': 'Sarcosinemia'}, {'p.pathway_name': 'Creatine deficiency, guanidinoacetate methyltransferase deficiency'}, {'p.pathway_name': 'Non Ketotic Hyperglycinemia'}]
+
+[DEBUG] Need API fallback? False
+Using cached result for query: 
+                                MATCH (m:Metaboli...
+
+[DEBUG] Additional description results: [{'m.description': "Arginine (Arg), also known as L-argninine, belongs to the class of organic compounds known as L-alpha-amino acids. These are alpha amino acids which have the L-configuration of the alpha-carbon atom. Amino acids are organic compounds that contain amino (‚ÄìNH2) and carboxyl (‚ÄìCOOH) functional groups, along with a side chain (R group) specific to each amino acid. L-asparagine is one of 20 proteinogenic amino acids, i.e., the amino acids used in the biosynthesis of proteins. Arginine is found in all organisms ranging from bacteria to plants to animals. Arginine is an essential amino acid that is physiologically active in the L-form. It is classified as a charged, basic, aliphatic amino acid. Arginine is considered to be a basic amino acid as it has a strongly basic guanidinium group. With a pKa of 12.48, the guanidinium group is positively charged in neutral, acidic, and even most basic environments. Because of the conjugation between the double bond and the nitrogen lone pairs, the positive charge is delocalized. This group is able to form multiple H-bonds. In mammals, arginine is formally classified as a semi-essential or conditionally essential amino acid, depending on the developmental stage and health status of the individual. Infants are unable to effectively synthesize arginine, making it nutritionally essential for infants. Adults, however, are able to synthesize arginine in the urea cycle. L-Arginine is an amino acid that has numerous functions in the body. It helps dispose of ammonia, is used to make compounds such as nitric oxide, creatine, L-glutamate, and L-proline, and it can be converted into glucose and glycogen if needed. Arginine also plays an important role in cell division, immunity and wound healing. Arginine is the immediate precursor of nitric oxide (NO), an important signaling molecule which can act as a second messenger, as well as an intercellular messenger which regulates vasodilation, and also has functions in the immune system's reaction to infection. Nitric oxide is made via the enzyme nitric oxide synthase (PMID 10690324). Arginine is also a precursor for several important nitrogen-containing compounds including urea, ornithine, and agmatine. Arginine is necessary for the synthesis of creatine and can be used for the synthesis of polyamines (mainly through ornithine and to a lesser degree through agmatine, citrulline, and glutamate.) The presence of asymmetric dimethylarginine (ADMA) in serum or plasma, a close relative of argninine, inhibits the nitric oxide synthase reaction. ADMA is considered a marker for vascular disease, just as L-arginine is considered a sign of a healthy endothelium. In large doses, L-arginine also stimulates the release of the hormones growth hormone and prolactin. Arginine is a known inducer of mTOR (mammalian target of rapamycin) and is responsible for inducing protein synthesis through the mTOR pathway. mTOR inhibition by rapamycin partially reduces arginine-induced protein synthesis (PMID: 20841502). Catabolic disease states such as sepsis, injury, and cancer cause an increase in arginine utilization, which can exceed normal body production, leading to arginine depletion. Arginine also activates AMP kinase (AMPK) which then stimulates skeletal muscle fatty acid oxidation and muscle glucose uptake, thereby increasing insulin secretion by pancreatic beta-cells (PMID: 21311355). Arginine is found in plant and animal proteins, such as dairy products, meat, poultry, fish, and nuts. The ratio of L-arginine to lysine is also important: soy and other plant proteins have more L-arginine than animal sources of protein."}, {'m.description': 'Not available'}, {'m.description': 'Dietary supplement, nutrient. Arginine (abbreviated as Arg or R) is an alpha-amino acid. The L-form is one of the 20 most common natural amino acids.'}]
+
+[DEBUG] Generating summary from Neo4j results...
+INFO:httpx:HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:httpx:HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:httpx:HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+
+[DEBUG] Neo4j summary generated successfully
+
+[DEBUG] Neo4j summary generated successfully
+
+[DEBUG] Neo4j summary generated successfully
+INFO:httpx:HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+
+[DEBUG] Selected entity: Arginine
+[DEBUG] All extracted entities: {'Arginine', 'Nitric oxide', 'arginine'}
+[DEBUG] Stored memory with entity: Arginine
+[DEBUG] Stored raw data types: ['entity_extraction']
+INFO:     127.0.0.1:62430 - "OPTIONS /query HTTP/1.1" 200 OK
+
+[DEBUG] Memory relevance ranking:
+  1. Score: 0.33
+     Query: What is the main protein that interacts with arginine, also show me the chemical structure of arginine, and any relevant pathways.
+     Entity: Arginine
+     Components: {'entity_match': 0.0, 'keyword_similarity': 0.031578947368421054, 'tag_match': 0.0, 'recency': 0.1, 'ambiguity_boost': 0.2}
+  2. Score: 0.24
+     Query: what is the chemical formula of serotonin?
+     Entity: Hydroxytryptamine
+     Components: {'entity_match': 0.0, 'keyword_similarity': 0.01764705882352941, 'tag_match': 0.0, 'recency': 0.09230769230769231, 'ambiguity_boost': 0.13333333333333336}
+  3. Score: 0.19
+     Query: Give me the synonyms for lactate and also show me the diseases associated with it.
+5.Give me information about HMDB0250793
+6.what is the chemical formula of serotonin?
+     Entity: HMDB0250793
+     Components: {'entity_match': 0.0, 'keyword_similarity': 0.03913043478260869, 'tag_match': 0.0, 'recency': 0.08461538461538462, 'ambiguity_boost': 0.06666666666666668}
+
+[DEBUG] Found 3 relevant turns for: '.I wanna learn more about lab knowledge for metabolites . What should I start with first ?'
+[INFO] Decision for query '.I wanna learn more about lab knowledge for metabolites . What should I start with first ?': pipeline
+INFO:     127.0.0.1:62430 - "POST /query HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+
+[DEBUG] Multiple intents detected: 'I wanna learn more about lab knowledge for metabolites' (GetGeneral), 'What should I start with first' (GetComparison)
+INFO:httpx:HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:httpx:HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+[DEBUG] Stored memory with entity: None
+^CINFO:     Shutting down
+INFO:     Waiting for application shutdown.
+app shutdown, neo4j connection closed
+INFO:     Application shutdown complete.
+INFO:     Finished server process [37638]
+(venv) adityashahi@Adityas-MacBook-Air-4 backend % 

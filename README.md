@@ -36,6 +36,33 @@ Developed an intelligent, LLM-driven chatbot that answers complex user questions
    pip install -r requirements.txt
    ```
 
+### Required API Keys
+Create a `.env` file in the backend directory with the following environment variables:
+
+```env
+# Neo4j Configuration
+NEO4J_URI="bolt://localhost:7687"
+NEO4J_USERNAME=neo4j
+NEO4J_PASSWORD=your_password
+
+# Groq API Keys
+GROQ_API_KEY=your_groq_api_key
+GROQ_API_KEY_GENERATION=your_groq_generation_api_key2
+
+# HMDB API Configuration
+HMDB_API_KEY=your_hmdb_api_key
+HMDB_BASE_URL=your_hmdb_base_url
+
+# Qwen API Keys
+QWEN=your_qwen_api_key
+QWEN_API=your_qwen_api_key
+```
+
+**Note:** You'll need to obtain these API keys from their respective services:
+- Groq API keys from [Groq's website](https://groq.com).Make sure to get two different api keys for groq.
+- HMDB API key from [HMDB's website](https://hmdb.ca)
+- Qwen API keys from [Qwen's platform](https://qwen.ai)
+
 ### Setting Up Neo4j via Docker
 We use Neo4j in a Docker container for local graph database hosting.
 
