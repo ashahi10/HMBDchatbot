@@ -85,7 +85,12 @@ def create_indexes_and_constraints(neo4j_connection: Neo4jConnection):
         "CREATE CONSTRAINT IF NOT EXISTS FOR (go:GOClass) REQUIRE go.goId IS UNIQUE",
         "CREATE CONSTRAINT IF NOT EXISTS FOR (sc:SubcellularLocation) REQUIRE sc.locationName IS UNIQUE",
         "CREATE CONSTRAINT IF NOT EXISTS FOR (pdb:PdbID) REQUIRE pdb.pdbId IS UNIQUE",
-        "CREATE CONSTRAINT IF NOT EXISTS FOR (pprop:ProteinProperty) REQUIRE pprop.propertyId IS UNIQUE"
+        "CREATE CONSTRAINT IF NOT EXISTS FOR (pprop:ProteinProperty) REQUIRE pprop.propertyId IS UNIQUE",
+        # Create indexes for the new alias relationships to improve query performance
+        "CREATE INDEX IF NOT EXISTS FOR ()-[r:IS_ALIAS_OF]-() ON (r)",
+        "CREATE INDEX IF NOT EXISTS FOR ()-[r:HAS_ALIAS]-() ON (r)",
+        # Create index for the is_secondary property to make filtering efficient
+        "CREATE INDEX IF NOT EXISTS FOR (m:Metabolite) ON (m.is_secondary)"
     ]
 
     for command in constraint_commands:
@@ -305,6 +310,48 @@ def parse_secondary_accessions(metabolite_element: ET.Element, accession_id: str
                     object_label="SecondaryAccession",
                     subject_key="accession",
                     object_key="secAccValue"
+                )
+
+def parse_secondary_accessions_as_metabolite_nodes(metabolite_element: ET.Element, accession_id: str, neo4j_connection: Neo4jConnection):
+    """
+    Parses <secondary_accessions> for a metabolite and creates Metabolite nodes for each secondary accession.
+    Links them to the primary Metabolite node using IS_ALIAS_OF and HAS_ALIAS relationships.
+    Each secondary accession node has an is_secondary=true property to distinguish it from primary nodes.
+    """
+    secondary_accessions_el = metabolite_element.find("secondary_accessions")
+    if secondary_accessions_el is not None:
+        for sec_acc_el in secondary_accessions_el.findall("accession"):
+            secondary_value = sec_acc_el.text.strip() if sec_acc_el.text else None
+            if secondary_value and secondary_value != accession_id:
+                create_or_merge_node(
+                    neo4j_connection=neo4j_connection,
+                    label="Metabolite",
+                    primary_key="accession",
+                    properties={
+                        "accession": secondary_value,
+                        "is_secondary": True,  # Flag to distinguish secondary accessions from primary
+                        "primary_accession": accession_id  # Reference to the primary accession
+                    }
+                )
+                create_or_merge_relationship(
+                    neo4j_connection=neo4j_connection,
+                    subject_node_id=secondary_value,
+                    relationship_type="IS_ALIAS_OF",
+                    object_node_id=accession_id,
+                    subject_label="Metabolite",
+                    object_label="Metabolite",
+                    subject_key="accession",
+                    object_key="accession"
+                )
+                create_or_merge_relationship(
+                    neo4j_connection=neo4j_connection,
+                    subject_node_id=accession_id,
+                    relationship_type="HAS_ALIAS",
+                    object_node_id=secondary_value,
+                    subject_label="Metabolite",
+                    object_label="Metabolite",
+                    subject_key="accession",
+                    object_key="accession"
                 )
 
 def parse_synonyms(metabolite_element: ET.Element, accession_id: str, neo4j_connection: Neo4jConnection):
@@ -920,12 +967,16 @@ def parse_full_metabolite(metabolite_element: ET.Element, neo4j_connection: Neo4
             "smiles": smiles,
             "inchi": inchi,
             "inchikey": inchikey,
-            "state": state_val
+            "state": state_val,
+            "is_secondary": False  # Explicitly mark this as a primary node
         }
     )
 
     # Parse metabolite sub-sections
+    # For secondary accessions, use both the original and new approach during transition
     parse_secondary_accessions(metabolite_element, accession_id, neo4j_connection)
+    parse_secondary_accessions_as_metabolite_nodes(metabolite_element, accession_id, neo4j_connection)
+    
     parse_synonyms(metabolite_element, accession_id, neo4j_connection)
     parse_taxonomy(metabolite_element, accession_id, neo4j_connection)
     parse_ontology(metabolite_element, accession_id, neo4j_connection)
