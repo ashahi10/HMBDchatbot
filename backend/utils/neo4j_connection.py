@@ -81,7 +81,6 @@ class Neo4jConnection:
             with self._driver.session() as session:
                 result = session.run(cypher_query, parameters or {}, timeout=30)
                 data = result.data()
-                import json
                 result_json = json.dumps(data)
                 token_count = len(result_json)
 

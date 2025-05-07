@@ -550,6 +550,46 @@ class LangChainPipeline:
             first_metabolite = metabolites[0] if metabolites else None
             print(f"\n[DEBUG] Extracted metabolites: {metabolites}")
             
+            # NEW: Check if this is a pathway-related query
+            is_pathway_query = False
+            pathway_keywords = [
+            "pathway", "pathways", "metabolic pathway", "biochemical pathway", "biosynthetic pathway",
+            "catabolic pathway", "degradation pathway", "signal transduction pathway",
+            "involved in", "participates in", "part of pathway", "metabolic process", 
+            "biological process", "reaction network", "reaction map", "enzymatic pathway",
+            "KEGG pathway", "SMPDB pathway", "WikiPathways", "pathway map", 
+            "visualize pathway", "show pathway", "diagram of", "interaction pathway", 
+            "regulatory pathway", "pathway diagram", "what pathway", "belongs to pathway",
+            "linked to pathway", "pathway name", "HMDB pathway"
+            ]
+
+            # Check if query text contains pathway-related terms
+            if any(keyword in sub_question.lower() for keyword in pathway_keywords):
+                is_pathway_query = True
+                print(f"\n[DEBUG] Detected pathway-related query: {sub_question}")
+                
+                # Try to retrieve pathway information if we have a metabolite
+                if first_metabolite:
+                    print(f"\n[DEBUG] Looking up pathways for metabolite: {first_metabolite}")
+                    
+                    # Get pathway data using our dedicated method
+                    pathways = self._get_metabolite_pathways(first_metabolite)
+                    
+                    if pathways:
+                        # Format pathway information for response
+                        pathway_text = self._format_pathways_for_response(pathways)
+                        print(f"\n[DEBUG] Found pathway information: {len(pathways)} pathways")
+                        
+                        # Add pathway data to result
+                        intent_results["pathways"] = pathways
+                        intent_results["text_accumulator"].append(pathway_text)
+                        
+                        # Skip database query since we've already found what we need
+                        return intent_results
+                    else:
+                        print(f"\n[DEBUG] No pathways found for metabolite: {first_metabolite}")
+                        # Continue with normal query flow if no pathways found
+            
             # 2) Query Planning
             planning_inputs = {
                 "question": sub_question, 
@@ -996,6 +1036,21 @@ class LangChainPipeline:
                 "error": None
             }
             
+            # NEW: Check if this is a pathway-related query that can be handled directly
+            pathway_keywords = [
+                "pathway", "pathways", "metabolic pathway", "biochemical pathway", "biosynthetic pathway",
+                "catabolic pathway", "degradation pathway", "signal transduction pathway",
+                "involved in", "participates in", "part of pathway", "metabolic process", 
+                "biological process", "reaction network", "reaction map", "enzymatic pathway",
+                "KEGG pathway", "SMPDB pathway", "WikiPathways", "pathway map", 
+                "visualize pathway", "show pathway", "diagram of", "interaction pathway", 
+                "regulatory pathway", "pathway diagram", "what pathway", "belongs to pathway",
+                "linked to pathway", "pathway name", "HMDB pathway"
+            ]
+
+            # Check if the query is pathway-related
+            is_pathway_query = any(keyword in user_question.lower() for keyword in pathway_keywords)
+            
             # Enhanced context generation to properly handle entity continuity
             context_info = ""
             entity_context = {}
@@ -1065,6 +1120,67 @@ class LangChainPipeline:
                 # Signal completion        
                 yield self._format_message("DONE", "")
                 return
+            
+            # NEW: Early handling of pathway-related queries if a clear metabolite is found
+            # Only execute this path for single-intent queries to avoid complexity
+            if is_pathway_query and not has_multiple_intents:
+                # First extract entities to find metabolites
+                extraction_inputs = {"question": user_question, "schema": self.neo4j_schema_text}
+                extraction_accumulator: List[str] = []
+                
+                # Extract entities from question
+                yield self._format_message("Thinking", "Looking for metabolites mentioned in your pathway question...")
+                async for sse_message in self._stream_and_accumulate(
+                    self.entity_chain, 
+                    "Extracting entities", 
+                    extraction_inputs, 
+                    extraction_accumulator
+                ):
+                    yield sse_message
+                
+                # Process extraction results
+                full_extraction_response = "".join(extraction_accumulator)
+                entities = self.entity_parser.parse(full_extraction_response)
+                metabolites = [ent.name for ent in entities.entities if ent.type == "Metabolite"]
+                
+                # If we found a metabolite, directly check for pathways
+                if metabolites:
+                    from backend.services.pathway_service import get_pathways_for_metabolite, get_pathways_by_metabolite_name
+                    
+                    # Use the first metabolite found
+                    first_metabolite = metabolites[0]
+                    yield self._format_message("Thinking", f"Looking up pathway information for {first_metabolite}...")
+                    
+                    # Get pathway data using the appropriate method
+                    pathways = []
+                    if first_metabolite.startswith("HMDB"):
+                        pathways = get_pathways_for_metabolite(self.neo4j_connection, first_metabolite)
+                    else:
+                        pathways = get_pathways_by_metabolite_name(self.neo4j_connection, first_metabolite)
+                    
+                    # If pathways were found, format and return them
+                    if pathways:
+                        # Format the pathway information as a response
+                        response = f"I found the following pathway information for {first_metabolite}:\n\n"
+                        
+                        for idx, pathway in enumerate(pathways, 1):
+                            response += f"{idx}. {pathway['name']}\n"
+                            
+                            if "smpdb_url" in pathway:
+                                response += f"   SMPDB: {pathway['smpdb_url']}\n"
+                                
+                            if "kegg_url" in pathway:
+                                response += f"   KEGG: {pathway['kegg_url']}\n"
+                                
+                            response += "\n"
+                        
+                        # Send the response
+                        yield self._format_message("Answer", response)
+                        yield self._format_message("DONE", "")
+                        return
+                    
+                    # If no pathways were found, inform the user
+                    yield self._format_message("Thinking", f"No pathway information found for {first_metabolite}. Proceeding with standard query...")
             
             # Check for relevant context from conversation history
             if relevant_history and len(relevant_history) > 0:
@@ -1583,53 +1699,71 @@ class LangChainPipeline:
                 else:
                     chunked[key] = value
             chunked_metabolites.append(chunked)
-
-        return {"metabolites": chunked_metabolites}
-
-
-    # def _truncate_text(self, text: str, max_sentences: int = 3) -> str:
-    #     """Truncates text to the first max_sentences sentences."""
-    #     if not text:
-    #         return ""
-    #     sentences = text.split(". ")
-    #     truncated = ". ".join(sentences[:max_sentences])
-    #     return truncated + ("." if len(sentences) > max_sentences and truncated else "")
-
-    # def _limit_list(self, lst: list, limit: int = 3) -> list:
-    #     """Limits a list to 'limit' items, handling nested structures."""
-    #     if not lst:
-    #         return []
-    #     limited = lst[:limit]
-    #     processed = []
+                
+            return {"metabolites": chunked_metabolites}
+            
+    def _get_metabolite_pathways(self, entity_name: str, entity_type: str = "Metabolite") -> List[Dict]:
+        """
+        Retrieve pathway information for a metabolite using the pathway service.
+        This provides a direct way to get formatted pathway data without complex Cypher.
         
-    #     for item in limited:
-    #         if isinstance(item, dict):
-    #             processed.append(self._filter_nested_dict(item, limit=3))
-    #         elif isinstance(item, str):
-    #             processed.append(item)
-    #         else:
-    #             processed.append(item)
+        Args:
+            entity_name: The name or accession of the metabolite
+            entity_type: The type of entity (should be "Metabolite")
+            
+        Returns:
+            List of dictionaries containing pathway information with formatted URLs
+        """
+        from backend.services.pathway_service import get_pathways_for_metabolite, get_pathways_by_metabolite_name
         
-    #     if len(lst) > limit:
-    #         processed.append(f"...and {len(lst) - limit} more")
-    #     return processed
-
-    # def _filter_nested_dict(self, d: dict, limit: int = 3) -> dict:
-    #     """Recursively filters a nested dictionary, limiting lists within it."""
-    #     filtered = {}
-    #     for key, value in d.items():
-    #         if value is None:
-    #             filtered[key] = ""
-    #         elif isinstance(value, str):
-    #             filtered[key] = self._truncate_text(value, max_sentences=3)
-    #         elif isinstance(value, list):
-    #             filtered[key] = self._limit_list(value, limit=limit)
-    #         elif isinstance(value, dict):
-    #             filtered[key] = self._filter_nested_dict(value, limit=limit)
-    #         else:
-    #             filtered[key] = value
-    #     return filtered
-
+        if not entity_name:
+            return []
+            
+        # Handle different entity types
+        if entity_type != "Metabolite":
+            print(f"[WARNING] Pathway lookup only works for Metabolites, got {entity_type}")
+            return []
+            
+        try:
+            # Check if entity_name is an HMDB ID/accession
+            if isinstance(entity_name, str) and entity_name.startswith("HMDB"):
+                # Use accession-based lookup
+                return get_pathways_for_metabolite(self.neo4j_connection, entity_name)
+            else:
+                # Use name-based lookup
+                return get_pathways_by_metabolite_name(self.neo4j_connection, entity_name)
+                
+        except Exception as e:
+            print(f"[ERROR] Error retrieving pathways for {entity_name}: {str(e)}")
+            return []
+            
+    def _format_pathways_for_response(self, pathways: List[Dict]) -> str:
+        """
+        Format pathway information for inclusion in LLM responses.
+        
+        Args:
+            pathways: List of pathway dictionaries from _get_metabolite_pathways
+            
+        Returns:
+            Formatted string for inclusion in LLM prompts or responses
+        """
+        if not pathways:
+            return "No pathway information found."
+            
+        result = "This metabolite is involved in the following pathways:\n\n"
+        
+        for idx, pathway in enumerate(pathways, 1):
+            result += f"{idx}. {pathway['name']}\n"
+            
+            if "smpdb_url" in pathway:
+                result += f"   SMPDB: {pathway['smpdb_url']}\n"
+                
+            if "kegg_url" in pathway:
+                result += f"   KEGG: {pathway['kegg_url']}\n"
+                
+            result += "\n"
+            
+        return result
 
     def _chunk_text(self, text: str, max_tokens: int = 150) -> list:
         """Chunks long text into readable parts for LLM input."""
