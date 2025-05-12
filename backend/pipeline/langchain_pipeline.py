@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 
 from backend.services.llm_service import MultiLLMService
 from backend.pipeline.prompts import entity_prompt, query_plan_prompt, query_prompt, summary_prompt, api_reasoning_prompt, query_necessity_prompt, general_answer_prompt, intent_splitting_prompt, aggregator_prompt
+from backend.utils.enrich_links import inject_hyperlinks
 
 load_dotenv()
 
@@ -257,17 +258,61 @@ class LangChainPipeline:
                     
         yield self._format_message(section, "DONE")
 
-    async def _stream_and_accumulate(self, chain, section: str, inputs: Dict[str, Any], accumulator: List[str]) -> AsyncGenerator[str, None]:
+    async def _stream_and_accumulate(self, chain, section: str, inputs: Dict[str, Any], accumulator: List[str], neo4j_results: List[Dict] = None) -> AsyncGenerator[str, None]:
+        """
+        Stream a chain's output while accumulating the text chunks and optionally applying link processing.
+        
+        This method handles two purposes:
+        1. Accumulates text chunks in the provided accumulator list
+        2. Optionally processes "Answer" section text with hyperlinks when neo4j_results are provided
+        
+        The neo4j_results parameter should be passed whenever streaming content that will be shown
+        directly to users and contains database identifiers that should be converted to hyperlinks.
+        
+        Args:
+            chain: The LangChain chain to stream from
+            section: The message section name
+            inputs: The inputs to pass to the chain
+            accumulator: A list to accumulate text chunks in
+            neo4j_results: Optional Neo4j results to use for hyperlink injection
+            
+        Yields:
+            Formatted SSE messages, with hyperlinks applied when appropriate
+        """
         async for sse_message in self._process_stream(chain, section, inputs):
             try:
                 message_json = sse_message[len("data:"):].strip()
                 message = json.loads(message_json)
             except json.JSONDecodeError:
                 continue
+            
+            text = message.get("text", "")
+            
+            # Only process valid content
+            if message.get("section") != "Thinking" and text not in BAD_RESPONSES + ["DONE"]:
+                # Accumulate the original text in the accumulator for downstream use
+                accumulator.append(text)
                 
-            if message.get("section") != "Thinking" and message.get("text") not in BAD_RESPONSES + ["DONE"]:
-                accumulator.append(message.get("text", ""))
-            yield sse_message
+                # If this is the Answer section and we have Neo4j results, process the text
+                # to add hyperlinks before streaming to the user
+                if message.get("section") == "Answer" and neo4j_results:
+                    # Apply hyperlink processing to the text
+                    processed_text = self._postprocess_text(text, neo4j_results)
+                    
+                    # Replace the text in the message with the processed version
+                    processed_message = {
+                        "section": message.get("section"),
+                        "text": processed_text
+                    }
+                    
+                    # Yield the processed message instead of the original
+                    yield f"data:{json.dumps(processed_message)}\n\n"
+                else:
+                    # For non-Answer sections or when no Neo4j results, yield as-is
+                    yield sse_message
+            else:
+                # Always yield control messages (DONE, Thinking)
+                yield sse_message
 
     async def _match_entities(self, entity_name: str, entity_type: str) -> List[dict]:
         pass
@@ -468,6 +513,31 @@ class LangChainPipeline:
         
         return query_text
 
+    def _postprocess_text(self, text: str, neo4j_results: List[Dict]) -> str:
+        """
+        Centralized text post-processing to apply consistent formatting and enrichment.
+        
+        Args:
+            text: The raw text to process
+            neo4j_results: The Neo4j results to use for link enrichment
+            
+        Returns:
+            Processed text with links and other enhancements
+        """
+        if not text or not neo4j_results:
+            return text
+            
+        # Apply hyperlink injection
+        processed_text = inject_hyperlinks(text, neo4j_results)
+        
+        # Any additional text processing can be added here
+        # For example:
+        # - Formatting corrections
+        # - Reference normalization
+        # - Adding footers or disclaimers
+        
+        return processed_text
+
     async def _process_sub_intent(self, intent: Intent, user_question: str, 
                                conversation_history: List = None, 
                                relevant_history: List = None,
@@ -491,15 +561,19 @@ class LangChainPipeline:
             # Initialize result container
             intent_results = {
                 "intent": intent,
-                "text_accumulator": [],
+                "text_accumulator": [],  # IMPORTANT: Raw text only, no hyperlinks yet
                 "section": "Answer",
                 "entities": [],
-                "neo4j_results": None,
+                "neo4j_results": None,  # Store results for later hyperlink injection
                 "api_data": None,
                 "query_plan": None,
                 "error": None,
                 "original_question": user_question  # Add original question for the aggregator
             }
+            
+            # IMPORTANT NOTE: This method should only accumulate raw text without any post-processing.
+            # Hyperlink injection should ONLY happen after all text is aggregated in _combine_sub_intent_results
+            # to prevent the LLM from potentially mangling markdown links during aggregation.
             
             # Use the sub-intent text as the specific question for this branch
             sub_question = intent.intent_text
@@ -770,7 +844,8 @@ class LangChainPipeline:
                                             self.summary_chain,
                                             "DB Summary",
                                             summary_inputs,
-                                            summary_accumulator
+                                            summary_accumulator,
+                                            neo4j_results=neo4j_results  # Pass the Neo4j results for hyperlink processing
                                         ):
                                             pass  # We don't yield these messages, just accumulate
                                         
@@ -807,7 +882,8 @@ class LangChainPipeline:
                                     self.summary_chain,
                                     "Answer",
                                     summary_inputs,
-                                    summary_accumulator
+                                    summary_accumulator,
+                                    neo4j_results=neo4j_results  # Pass the Neo4j results for hyperlink processing
                                 ):
                                     pass  # We don't yield these messages, just accumulate
                                 
@@ -846,7 +922,8 @@ class LangChainPipeline:
                             self.summary_chain,
                             "DB Summary", 
                             summary_inputs,
-                            summary_accumulator
+                            summary_accumulator,
+                            neo4j_results=memory_raw_data["neo4j_results"]  # Pass the Neo4j results for hyperlink processing
                         ):
                             pass  # We don't yield these messages, just accumulate
                         
@@ -879,10 +956,14 @@ class LangChainPipeline:
                         # Merge both summaries if we have API data
                         if api_summary:
                             final_summary = self._merge_summaries(db_summary, api_summary)
+                            
+                            # Remove hyperlink injection at individual text piece level
+                            # Let post-processing happen only after aggregation
                             intent_results["text_accumulator"].append(final_summary)
                         else:
+                            # Remove hyperlink injection at individual text piece level
+                            # Let post-processing happen only after aggregation
                             intent_results["text_accumulator"].append(db_summary)
-                    
                     elif "api_data" in memory_raw_data and memory_raw_data["api_data"]:
                         # Only have API data from memory
                         api_reasoning_inputs = {
@@ -936,12 +1017,22 @@ class LangChainPipeline:
         Returns:
             Combined text to present to the user
         """
+        # IMPORTANT: This is where all text post-processing (like hyperlink injection) should happen.
+        # We first let the LLM aggregate the raw text, then apply post-processing to the final result.
+        # This ensures that markdown formatting doesn't get mangled during LLM processing.
+        
         if not results:
             return "I couldn't process your question. Please try again."
         
         # If only one result, just return its text
         if len(results) == 1:
-            return "".join(results[0].get("text_accumulator", []))
+            combined_text = "".join(results[0].get("text_accumulator", []))
+            
+            # Apply post-processing if neo4j_results are available
+            neo4j_results = results[0].get("neo4j_results")
+            if neo4j_results:
+                return self._postprocess_text(combined_text, neo4j_results)
+            return combined_text
         
         # For multiple results, format them for the aggregator
         combined_parts = []
@@ -988,7 +1079,18 @@ class LangChainPipeline:
                 if chunk:
                     aggregated_response += chunk if isinstance(chunk, str) else str(chunk)
             
-            # Return the aggregated response
+            # Apply post-processing to the aggregated response
+            # Collect all neo4j_results from all sub-intents
+            all_neo4j_results = []
+            for result in results:
+                if result.get("neo4j_results"):
+                    all_neo4j_results.extend(result.get("neo4j_results"))
+                    
+            # Apply post-processing if we have any neo4j_results
+            if all_neo4j_results:
+                return self._postprocess_text(aggregated_response, all_neo4j_results)
+                
+            # Return the aggregated response without post-processing if no neo4j_results
             return aggregated_response
             
         except Exception as e:
@@ -1021,10 +1123,30 @@ class LangChainPipeline:
             combined_parts.insert(0, "Here's the information you asked for:")
             
             # Combine all parts
-            return "\n".join(combined_parts)
+            combined_text = "\n".join(combined_parts)
+            
+            # Apply post-processing to the fallback response
+            # Collect all neo4j_results from all sub-intents
+            all_neo4j_results = []
+            for result in results:
+                if result.get("neo4j_results"):
+                    all_neo4j_results.extend(result.get("neo4j_results"))
+                    
+            # Apply post-processing if we have any neo4j_results
+            if all_neo4j_results:
+                return self._postprocess_text(combined_text, all_neo4j_results)
+                
+            # Return the combined text without post-processing if no neo4j_results
+            return combined_text
 
     async def run_pipeline(self, user_question: str, conversation_history: List = None, relevant_history: List = None) -> AsyncGenerator[str, None]:
         try:
+            # IMPORTANT: Follow the pattern of separating text accumulation from post-processing.
+            # 1. Accumulate raw text without hyperlink injection
+            # 2. Perform any LLM aggregation on the raw text
+            # 3. Only apply post-processing (like hyperlink injection) on the final text
+            # This prevents markdown links from being mangled during LLM processing.
+            
             # Initialize intent_results dictionary to avoid "name not defined" error
             intent_results = {
                 "text_accumulator": [],
@@ -1112,10 +1234,23 @@ class LangChainPipeline:
                 
                 # Stream the response
                 answer_accumulator = []
+                
+                # Check if context might contain database information that needs hyperlinks
+                potential_neo4j_results = []
+                if relevant_history:
+                    for turn in relevant_history[:3]:  # Look at recent turns for DB results
+                        if "raw_data" in turn and "neo4j_results" in turn["raw_data"]:
+                            potential_neo4j_results.extend(turn["raw_data"]["neo4j_results"])
+                
                 async for chunk in self.general_answer_chain.astream(general_inputs):
                     if isinstance(chunk, str):
                         answer_accumulator.append(chunk)
-                        yield self._format_message("Answer", chunk)
+                        # Apply hyperlink processing if we have potential data
+                        if potential_neo4j_results:
+                            processed_chunk = self._postprocess_text(chunk, potential_neo4j_results)
+                            yield self._format_message("Answer", processed_chunk)
+                        else:
+                            yield self._format_message("Answer", chunk)
                         
                 # Signal completion        
                 yield self._format_message("DONE", "")
@@ -1526,7 +1661,8 @@ class LangChainPipeline:
                                         self.summary_chain,
                                         "DB Summary",
                                         summary_inputs,
-                                        summary_accumulator
+                                        summary_accumulator,
+                                        neo4j_results=neo4j_results  # Pass the Neo4j results for hyperlink processing
                                     ):
                                         pass  # We don't yield these messages, just accumulate
                                     
@@ -1558,7 +1694,8 @@ class LangChainPipeline:
                                 self.summary_chain,
                                 "Answer",
                                 summary_inputs,
-                                summary_accumulator
+                                summary_accumulator,
+                                neo4j_results=neo4j_results  # Pass the Neo4j results for hyperlink processing
                             ):
                                 yield sse_message
                         else:
@@ -1585,7 +1722,8 @@ class LangChainPipeline:
                             self.summary_chain,
                             "DB Summary", 
                             summary_inputs,
-                            summary_accumulator
+                            summary_accumulator,
+                            neo4j_results=memory_raw_data["neo4j_results"]  # Pass the Neo4j results for hyperlink processing
                         ):
                             pass  # We don't yield these messages, just accumulate
                         
@@ -1618,10 +1756,14 @@ class LangChainPipeline:
                         # Merge both summaries if we have API data
                         if api_summary:
                             final_summary = self._merge_summaries(db_summary, api_summary)
+                            
+                            # Remove hyperlink injection at individual text piece level
+                            # Let post-processing happen only after aggregation
                             intent_results["text_accumulator"].append(final_summary)
                         else:
+                            # Remove hyperlink injection at individual text piece level
+                            # Let post-processing happen only after aggregation
                             intent_results["text_accumulator"].append(db_summary)
-                    
                     elif "api_data" in memory_raw_data and memory_raw_data["api_data"]:
                         # Only have API data from memory
                         api_reasoning_inputs = {
