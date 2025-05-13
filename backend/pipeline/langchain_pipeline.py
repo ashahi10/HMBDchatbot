@@ -44,7 +44,8 @@ class LangChainPipeline:
         self.llm_service = llm_service
         self.neo4j_connection = neo4j_connection
         self.neo4j_schema_text = neo4j_schema_text
-        self.hmdb_client = hmdb_client
+        # Commented out HMDB client but preserved for future use
+        # self.hmdb_client = hmdb_client
         self.env_groq_api_key = os.getenv("GROQ_API_KEY")
         self.env_groq_api_key_generation = os.getenv("GROQ_API_KEY_GENERATION")
         # Add Qwen API keys
@@ -318,20 +319,20 @@ class LangChainPipeline:
         pass
 
     def _merge_summaries(self, neo4j_summary: str, api_summary: str) -> str:
-        """
-        Merges Neo4j and API summaries into a unified response.
-        """
-        if not neo4j_summary.strip():
-            return api_summary
-        if not api_summary.strip():
-            return neo4j_summary
-
-        return (
-            f"{neo4j_summary.strip()}\n\n"
-            f"---\n\n"
-            f"**🔍 Additional Insights from HMDB API:**\n\n"
-            f"{api_summary.strip()}"
-        )
+        # HMDB API integration temporarily disabled
+        # """Merges Neo4j and API summaries into a unified response."""
+        # if not neo4j_summary.strip():
+        #     return api_summary
+        # if not api_summary.strip():
+        #     return neo4j_summary
+        # 
+        # return (
+        #     f"{neo4j_summary.strip()}\n\n"
+        #     f"---\n\n"
+        #     f"**🔍 Additional Insights from HMDB API:**\n\n"
+        #     f"{api_summary.strip()}"
+        # )
+        return neo4j_summary  # Return only Neo4j summary while HMDB API is disabled
 
     # PHASE 4: Add method to determine if a query requires database access
     async def _should_query_llm_decision(self, question: str) -> bool:
@@ -784,88 +785,55 @@ class LangChainPipeline:
                                 intent_results["neo4j_results"] = neo4j_results
                         
                         # Handle fallback to HMDB API if needed
-                        if should_fallback and len(metabolites) > 0 and self.hmdb_client:
-                            first_metabolite = metabolites[0]
-                            fallback_data = None
-                            
-                            # Make API call based on ID or name
-                            try:
-                                if first_metabolite.startswith("HMDB"):
-                                    print(f"\n[DEBUG] Making HMDB API call for ID: {first_metabolite}")
-                                    payload = {"hmdb_id": [first_metabolite]}
-                                    fallback_data = self.hmdb_client.post("metabolites", payload)
-                                else:
-                                    print(f"\n[DEBUG] Making HMDB API search for name: {first_metabolite}")
-                                    payload = {"name": first_metabolite}
-                                    fallback_data = self.hmdb_client.post("metabolites/search", payload)
-                                
-                                print(f"\n[DEBUG] HMDB API response: {fallback_data.keys() if fallback_data else None}")
-                            except Exception as api_error:
-                                print(f"\n[ERROR] HMDB API call failed: {api_error}")
-                            
-                            # Process API response
-                            if fallback_data and "found" in fallback_data:
-                                filtered_fallback_data = self._filter_hmdb_response(fallback_data)
-                                intent_results["api_data"] = filtered_fallback_data
-                                
-                                # Run API reasoning chain
-                                try:
-                                    print(f"\n[DEBUG] Running API reasoning chain...")
-                                    api_reasoning_inputs = {
-                                        "api_data": filtered_fallback_data,
-                                        "question": sub_question
-                                    }
-                                    api_reasoning_accumulator: List[str] = []
-                                    
-                                    # Stream API reasoning (only for internal processing)
-                                    async for _ in self._stream_and_accumulate(
-                                        self.api_reasoning_chain,
-                                        "API Summary",
-                                        api_reasoning_inputs,
-                                        api_reasoning_accumulator
-                                    ):
-                                        pass  # We don't yield these messages, just accumulate
-                                    
-                                    # Store API reasoning results
-                                    api_summary = "".join(api_reasoning_accumulator)
-                                    intent_results["api_summary"] = api_summary
-                                    print(f"\n[DEBUG] API summary generated successfully")
-                                    
-                                    # If we have Neo4j results, run DB summary chain too
-                                    if neo4j_results and not should_fallback:
-                                        summary_inputs = {
-                                            "query_results": neo4j_results,
-                                            "question": sub_question
-                                        }
-                                        summary_accumulator: List[str] = []
-                                        
-                                        # Stream DB summary (only for internal processing)
-                                        async for _ in self._stream_and_accumulate(
-                                            self.summary_chain,
-                                            "DB Summary",
-                                            summary_inputs,
-                                            summary_accumulator,
-                                            neo4j_results=neo4j_results  # Pass the Neo4j results for hyperlink processing
-                                        ):
-                                            pass  # We don't yield these messages, just accumulate
-                                        
-                                        # Store DB summary results
-                                        db_summary = "".join(summary_accumulator)
-                                        intent_results["db_summary"] = db_summary
-                                        
-                                        # Merge both summaries
-                                        final_summary = self._merge_summaries(db_summary, api_summary)
-                                        intent_results["text_accumulator"].append(final_summary)
-                                    else:
-                                        # If no Neo4j results, just use API summary
-                                        intent_results["text_accumulator"].append(api_summary)
-                                except Exception as reasoning_error:
-                                    print(f"\n[ERROR] API reasoning failed: {reasoning_error}")
-                                    intent_results["error"] = f"API reasoning failed: {reasoning_error}"
-                                    intent_results["text_accumulator"].append(f"Error processing API data: {reasoning_error}")
-                            else:
-                                intent_results["error"] = "No data found in HMDB API response"
-                                print(f"\n[DEBUG] No data found in HMDB API response")
+                        if should_fallback and len(metabolites) > 0:
+                            # HMDB API integration temporarily disabled
+                            # if self.hmdb_client:
+                            #     first_metabolite = metabolites[0]
+                            #     fallback_data = None
+                            #     
+                            #     # Make API call based on ID or name
+                            #     try:
+                            #         if first_metabolite.startswith("HMDB"):
+                            #             print(f"\n[DEBUG] Making HMDB API call for ID: {first_metabolite}")
+                            #             payload = {"hmdb_id": [first_metabolite]}
+                            #             fallback_data = self.hmdb_client.post("metabolites", payload)
+                            #         else:
+                            #             print(f"\n[DEBUG] Making HMDB API search for name: {first_metabolite}")
+                            #             payload = {"name": first_metabolite}
+                            #             fallback_data = self.hmdb_client.post("metabolites/search", payload)
+                            #         
+                            #         print(f"\n[DEBUG] HMDB API response: {fallback_data.keys() if fallback_data else None}")
+                            #     except Exception as api_error:
+                            #         print(f"\n[ERROR] HMDB API call failed: {api_error}")
+                            #     
+                            #     # Process API response
+                            #     if fallback_data and "found" in fallback_data:
+                            #         filtered_fallback_data = self._filter_hmdb_response(fallback_data)
+                            #         intent_results["api_data"] = filtered_fallback_data
+                            #         
+                            #         # Run API reasoning chain
+                            #         try:
+                            #             print(f"\n[DEBUG] Running API reasoning chain...")
+                            #             api_reasoning_inputs = {
+                            #                 "api_data": filtered_fallback_data,
+                            #                 "question": sub_question
+                            #             }
+                            #             api_reasoning_accumulator: List[str] = []
+                            #             
+                            #             # Stream API reasoning (only for internal processing)
+                            #             async for _ in self._stream_and_accumulate(
+                            #                 self.api_reasoning_chain,
+                            #                 "API Summary",
+                            #                 api_reasoning_inputs,
+                            #                 api_reasoning_accumulator
+                            #             ):
+                            #                 pass  # We don't yield these messages, just accumulate
+                            #             
+                            #             # Store API reasoning results
+                            #             api_summary = "".join(api_reasoning_accumulator)
+                            #             intent_results["api_summary"] = api_summary
+                            #             print(f"\n[DEBUG] API summary generated successfully")
+                            pass  # Skip HMDB API integration for now
                         
                         # If no fallback needed or fallback failed, use Neo4j results
                         elif neo4j_results and neo4j_results != [None] and neo4j_results != [""]:
@@ -1592,9 +1560,9 @@ class LangChainPipeline:
                         # Check if we need fallback
                         should_fallback = analyze_missing_fields(user_question, neo4j_results)
                         if should_fallback:
-                            print("[DEBUG] Neo4j results are insufficient, initiating HMDB fallback...")
+                            print("[DEBUG] Neo4j results are insufficient")  # Removed HMDB fallback reference
                         elif not neo4j_results or neo4j_results == [None] or neo4j_results == [""]:
-                            print("[DEBUG] No valid results from Neo4j, initiating HMDB fallback...")
+                            print("[DEBUG] No valid results from Neo4j")  # Removed HMDB fallback reference
                             should_fallback = True
 
                         # Get additional description results
@@ -1611,72 +1579,56 @@ class LangChainPipeline:
                                 neo4j_results += more_results
 
                         # Handle fallback if needed
-                        if should_fallback and len(metabolites) > 0 and self.hmdb_client:
-                            first_metabolite = metabolites[0]
-                            fallback_data = None
-
-                            if first_metabolite.startswith("HMDB"):
-                                print(f"\n[DEBUG] Making API call for ID '{first_metabolite}'")
-                                payload = {"hmdb_id": [first_metabolite]}
-                                fallback_data = self.hmdb_client.post("metabolites", payload)
-                            else:
-                                print(f"\n[DEBUG] Making HMDB API search for name: {first_metabolite}")
-                                payload = {"name": first_metabolite}
-                                fallback_data = self.hmdb_client.post("metabolites/search", payload)
-
-                            if fallback_data and "found" in fallback_data:
-                                filtered_fallback_data = self._filter_hmdb_response(fallback_data)
-                                print(f"\n[DEBUG] Filtered HMDB fallback data: {filtered_fallback_data}")
-
-                                # PHASE 3: Store API results in memory_raw_data if not already present
-                                if used_memory_data and "api_data" not in memory_raw_data:
-                                    memory_raw_data["api_data"] = filtered_fallback_data
-                                elif not used_memory_data:
-                                    memory_raw_data = {"api_data": filtered_fallback_data}
-                                    
-                                # Run API reasoning chain
-                                api_reasoning_inputs = {
-                                    "api_data": memory_raw_data.get("api_data", filtered_fallback_data),
-                                    "question": user_question
-                                }
-                                api_reasoning_accumulator: List[str] = []
-                                async for sse_message in self._stream_and_accumulate(
-                                    self.api_reasoning_chain,
-                                    "API Summary",
-                                    api_reasoning_inputs,
-                                    api_reasoning_accumulator
-                                ):
-                                    pass  # We don't yield these messages, just accumulate
-
-                                # If we have Neo4j results, run DB summary chain too
-                                # if neo4j_results and neo4j_results != [None] and neo4j_results != [""]:
-                                if neo4j_results and not should_fallback:
-                                    # PHASE 3: Mark if using memory data
-                                    summary_inputs = {
-                                        "query_results": neo4j_results,
-                                        "question": user_question
-                                    }
-                                    summary_accumulator: List[str] = []
-                                    async for sse_message in self._stream_and_accumulate(
-                                        self.summary_chain,
-                                        "DB Summary",
-                                        summary_inputs,
-                                        summary_accumulator,
-                                        neo4j_results=neo4j_results  # Pass the Neo4j results for hyperlink processing
-                                    ):
-                                        pass  # We don't yield these messages, just accumulate
-                                    
-                                    # Merge both summaries
-                                    final_summary = self._merge_summaries(
-                                        "".join(summary_accumulator),
-                                        "".join(api_reasoning_accumulator)
-                                    )
-                                    intent_results["text_accumulator"].append(final_summary)
-                                else:
-                                    # If no Neo4j results, just use API summary
-                                    intent_results["text_accumulator"].append("".join(api_reasoning_accumulator))
-                                return
-
+                        if should_fallback and len(metabolites) > 0:
+                            # HMDB API integration temporarily disabled
+                            # if self.hmdb_client:
+                            #     first_metabolite = metabolites[0]
+                            #     fallback_data = None
+                            #     
+                            #     # Make API call based on ID or name
+                            #     try:
+                            #         if first_metabolite.startswith("HMDB"):
+                            #             print(f"\n[DEBUG] Making HMDB API call for ID: {first_metabolite}")
+                            #             payload = {"hmdb_id": [first_metabolite]}
+                            #             fallback_data = self.hmdb_client.post("metabolites", payload)
+                            #         else:
+                            #             print(f"\n[DEBUG] Making HMDB API search for name: {first_metabolite}")
+                            #             payload = {"name": first_metabolite}
+                            #             fallback_data = self.hmdb_client.post("metabolites/search", payload)
+                            #         
+                            #         print(f"\n[DEBUG] HMDB API response: {fallback_data.keys() if fallback_data else None}")
+                            #     except Exception as api_error:
+                            #         print(f"\n[ERROR] HMDB API call failed: {api_error}")
+                            #     
+                            #     # Process API response
+                            #     if fallback_data and "found" in fallback_data:
+                            #         filtered_fallback_data = self._filter_hmdb_response(fallback_data)
+                            #         intent_results["api_data"] = filtered_fallback_data
+                            #         
+                            #         # Run API reasoning chain
+                            #         try:
+                            #             print(f"\n[DEBUG] Running API reasoning chain...")
+                            #             api_reasoning_inputs = {
+                            #                 "api_data": filtered_fallback_data,
+                            #                 "question": sub_question
+                            #             }
+                            #             api_reasoning_accumulator: List[str] = []
+                            #             
+                            #             # Stream API reasoning (only for internal processing)
+                            #             async for _ in self._stream_and_accumulate(
+                            #                 self.api_reasoning_chain,
+                            #                 "API Summary",
+                            #                 api_reasoning_inputs,
+                            #                 api_reasoning_accumulator
+                            #             ):
+                            #                 pass  # We don't yield these messages, just accumulate
+                            #             
+                            #             # Store API reasoning results
+                            #             api_summary = "".join(api_reasoning_accumulator)
+                            #             intent_results["api_summary"] = api_summary
+                            #             print(f"\n[DEBUG] API summary generated successfully")
+                            pass  # Skip HMDB API integration for now
+                        
                         # If no fallback needed or fallback failed, use Neo4j results
                         if neo4j_results and neo4j_results != [None] and neo4j_results != [""]:
                             # PHASE 3: Store Neo4j results in memory_raw_data
@@ -1795,55 +1747,56 @@ class LangChainPipeline:
             yield self._format_message("Error", f"Error in pipeline: {e}")
 
     def _filter_hmdb_response(self, hmdb_data: dict) -> dict:
-        """Preserves full HMDB API response and chunks structured data for LLM use."""
-        if not isinstance(hmdb_data, dict) or "found" not in hmdb_data or not hmdb_data["found"]:
-            return {"error": "No valid data found in HMDB response"}
+        # HMDB API integration temporarily disabled
+        # """Preserves full HMDB API response and chunks structured data for LLM use."""
+        # if not isinstance(hmdb_data, dict) or "found" not in hmdb_data or not hmdb_data["found"]:
+        #     return {"error": "No valid data found in HMDB response"}
+        # 
+        # # Store full API response in cache folder instead of current directory
+        # self.last_hmdb_api_result = hmdb_data  # For internal LLM access or chaining
+        # 
+        # # Save to cache folder (if it exists) or default to current directory
+        # try:
+        #     from pathlib import Path
+        #     cache_dir = Path("cache/api_responses")
+        #     if not cache_dir.exists():
+        #         cache_dir.mkdir(parents=True, exist_ok=True)
+        #     
+        #     cache_file = cache_dir / "latest_hmdb_api_full.json"
+        #     
+        #     with open(cache_file, "w") as f:
+        #         import json
+        #         json.dump(hmdb_data, f, indent=2)
+        # except Exception as e:
+        #     print(f"Failed to save HMDB response to cache: {e}")
+        #     try:
+        #         with open("latest_hmdb_api_full.json", "w") as f:
+        #             import json
+        #             json.dump(hmdb_data, f, indent=2)
+        #     except Exception as e:
+        #         print(f"Failed to save HMDB response to fallback location: {e}")
+        # 
+        # # Instead of truncation, chunk by tag/key for LLM compatibility
+        # MAX_METABOLITES = 10
+        # metabolites = hmdb_data["found"][:MAX_METABOLITES]
+        # chunked_metabolites = []
+        # 
+        # for metabolite in metabolites:
+        #     chunked = {}
+        #     for key, value in metabolite.items():
+        #         if isinstance(value, dict):
+        #             chunked[key] = self._chunk_nested_dict(value)
+        #         elif isinstance(value, list):
+        #             chunked[key] = self._chunk_list(value)
+        #         elif isinstance(value, str):
+        #             chunked[key] = self._chunk_text(value)
+        #         else:
+        #             chunked[key] = value
+        #     chunked_metabolites.append(chunked)
+        #     
+        # return {"metabolites": chunked_metabolites}
+        return {}  # Return empty dict while HMDB API is disabled
 
-        # ✅ Store full API response in cache folder instead of current directory
-        self.last_hmdb_api_result = hmdb_data  # For internal LLM access or chaining
-        
-        # Save to cache folder (if it exists) or default to current directory
-        try:
-            from pathlib import Path
-            cache_dir = Path("cache/api_responses")
-            if not cache_dir.exists():
-                cache_dir.mkdir(parents=True, exist_ok=True)
-            
-            cache_file = cache_dir / "latest_hmdb_api_full.json"
-            
-            with open(cache_file, "w") as f:
-                import json
-                json.dump(hmdb_data, f, indent=2)
-        except Exception as e:
-            print(f"Failed to save HMDB response to cache: {e}")
-            # Fallback to the original location if cache fails
-            try:
-                with open("latest_hmdb_api_full.json", "w") as f:
-                    import json
-                    json.dump(hmdb_data, f, indent=2)
-            except Exception as e:
-                print(f"Failed to save HMDB response to fallback location: {e}")
-
-        # ✅ Instead of truncation, chunk by tag/key for LLM compatibility
-        MAX_METABOLITES = 10
-        metabolites = hmdb_data["found"][:MAX_METABOLITES]
-        chunked_metabolites = []
-
-        for metabolite in metabolites:
-            chunked = {}
-            for key, value in metabolite.items():
-                if isinstance(value, dict):
-                    chunked[key] = self._chunk_nested_dict(value)
-                elif isinstance(value, list):
-                    chunked[key] = self._chunk_list(value)
-                elif isinstance(value, str):
-                    chunked[key] = self._chunk_text(value)
-                else:
-                    chunked[key] = value
-            chunked_metabolites.append(chunked)
-                
-            return {"metabolites": chunked_metabolites}
-            
     def _get_metabolite_pathways(self, entity_name: str, entity_type: str = "Metabolite") -> List[Dict]:
         """
         Retrieve pathway information for a metabolite using the pathway service.
