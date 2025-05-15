@@ -10,7 +10,7 @@ from langchain_core.output_parsers import StrOutputParser, PydanticOutputParser
 from pydantic import BaseModel, Field
 
 from backend.services.llm_service import MultiLLMService
-from backend.pipeline.prompts import entity_prompt, query_plan_prompt, query_prompt, summary_prompt, api_reasoning_prompt, query_necessity_prompt, general_answer_prompt, intent_splitting_prompt, aggregator_prompt
+from backend.pipeline.prompts import entity_prompt, query_plan_prompt, query_prompt, summary_prompt, query_necessity_prompt, general_answer_prompt, intent_splitting_prompt, aggregator_prompt
 from backend.utils.enrich_links import inject_hyperlinks
 
 load_dotenv()
@@ -152,17 +152,18 @@ class LangChainPipeline:
             custom_temperature=0.7,
             custom_max_tokens=4096
         )
-        self.api_reasoning_chain = self._create_chain(
-            {"api_data": lambda x: x["api_data"], "question": lambda x: x["question"]},
-            api_reasoning_prompt,
-            streaming=True,
-            parser=None,
-            model_type="summary",
-            use_env_key=True,
-            custom_model="meta-llama/llama-4-scout-17b-16e-instruct",
-            custom_temperature=0.7,
-            custom_max_tokens=4096
-        )
+        # Commented out api_reasoning_chain as the prompt is not available
+        # self.api_reasoning_chain = self._create_chain(
+        #     {"api_data": lambda x: x["api_data"], "question": lambda x: x["question"]},
+        #     api_reasoning_prompt,
+        #     streaming=True,
+        #     parser=None,
+        #     model_type="summary",
+        #     use_env_key=True,
+        #     custom_model="meta-llama/llama-4-scout-17b-16e-instruct",
+        #     custom_temperature=0.7,
+        #     custom_max_tokens=4096
+        # )
 
     def _create_chain(self, assignment_funcs: dict, chain_prompt, streaming: bool, parser: Optional[PydanticOutputParser] = None, 
                      model_type: str = "query", use_env_key: bool = False,
