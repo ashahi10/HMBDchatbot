@@ -916,6 +916,37 @@ def parse_general_references(metabolite_element: ET.Element, accession_id: str, 
 ###########################################################################
 # MAIN METABOLITE PARSER
 ###########################################################################
+def parse_metabolite_description(metabolite_element: ET.Element, accession_id: str, neo4j_connection: Neo4jConnection):
+    """
+    Creates a Description node for a metabolite and links it with HAS_DESCRIPTION relationship.
+    The Description node contains the full description text and maintains both accession and element ID linkage.
+    Uses improved logic to prevent duplicates and ensure data integrity.
+    """
+    description = get_text(metabolite_element, "description")
+    if description:
+        # Create unique ID for the Description node using accession
+        description_node_id = f"{accession_id}_desc"
+        
+        # Use a single atomic operation to create both node and relationship
+        atomic_query = """
+        MATCH (m:Metabolite {accession: $acc})
+        WHERE m.description IS NOT NULL
+        AND NOT EXISTS((m)-[:HAS_DESCRIPTION]->(:Description))
+        CREATE (d:Description {
+            descriptionId: $desc_id,
+            text: $desc,
+            metabolite_id: $acc,
+            metabolite_element_id: elementId(m)
+        })
+        CREATE (m)-[:HAS_DESCRIPTION]->(d)
+        RETURN 1 as created
+        """
+        neo4j_connection.add_query(atomic_query, {
+            "acc": accession_id,
+            "desc_id": description_node_id,
+            "desc": description
+        })
+
 def parse_full_metabolite(metabolite_element: ET.Element, neo4j_connection: Neo4jConnection):
     """
     Parses a single <metabolite> element and merges its data into the Neo4j knowledge graph.
@@ -972,8 +1003,10 @@ def parse_full_metabolite(metabolite_element: ET.Element, neo4j_connection: Neo4
         }
     )
 
+    # Create Description node and relationship
+    parse_metabolite_description(metabolite_element, accession_id, neo4j_connection)
+
     # Parse metabolite sub-sections
-    # For secondary accessions, use both the original and new approach during transition
     parse_secondary_accessions(metabolite_element, accession_id, neo4j_connection)
     parse_secondary_accessions_as_metabolite_nodes(metabolite_element, accession_id, neo4j_connection)
     
