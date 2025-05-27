@@ -58,6 +58,7 @@ def create_indexes_and_constraints(neo4j_connection: Neo4jConnection):
         "CREATE CONSTRAINT IF NOT EXISTS FOR (m:Metabolite) REQUIRE m.accession IS UNIQUE",
         "CREATE CONSTRAINT IF NOT EXISTS FOR (sa:SecondaryAccession) REQUIRE sa.secAccValue IS UNIQUE",
         "CREATE CONSTRAINT IF NOT EXISTS FOR (s:Synonym) REQUIRE s.synonymText IS UNIQUE",
+        "CREATE CONSTRAINT IF NOT EXISTS FOR (si:SynonymIndex) REQUIRE si.canonical IS UNIQUE",
         "CREATE CONSTRAINT IF NOT EXISTS FOR (o:OntologyTerm) REQUIRE o.termName IS UNIQUE",
         "CREATE CONSTRAINT IF NOT EXISTS FOR (t:Taxonomy) REQUIRE t.taxonomyName IS UNIQUE",
         "CREATE CONSTRAINT IF NOT EXISTS FOR (ep:ExperimentalProperty) REQUIRE ep.expPropId IS UNIQUE",
@@ -89,6 +90,7 @@ def create_indexes_and_constraints(neo4j_connection: Neo4jConnection):
         # Create indexes for the new alias relationships to improve query performance
         "CREATE INDEX IF NOT EXISTS FOR ()-[r:IS_ALIAS_OF]-() ON (r)",
         "CREATE INDEX IF NOT EXISTS FOR ()-[r:HAS_ALIAS]-() ON (r)",
+        "CREATE INDEX IF NOT EXISTS FOR ()-[r:HAS_SYNONYM_INDEX]-() ON (r)",
         # Create index for the is_secondary property to make filtering efficient
         "CREATE INDEX IF NOT EXISTS FOR (m:Metabolite) ON (m.is_secondary)"
     ]
@@ -98,6 +100,19 @@ def create_indexes_and_constraints(neo4j_connection: Neo4jConnection):
             neo4j_connection.run_query(command)
         except Exception as e:
             print(f"Warning: Could not create constraint with query: {command}. Error: {str(e)}")
+
+    # Create fulltext index for SynonymIndex search
+    try:
+        fulltext_index_query = """
+        CALL db.index.fulltext.createIfNotExists(
+            'synonym_comprehensive_search',
+            ['SynonymIndex'],
+            ['canonical', 'name', 'synonyms']
+        )
+        """
+        neo4j_connection.run_query(fulltext_index_query)
+    except Exception as e:
+        print(f"Warning: Could not create fulltext index for SynonymIndex: {str(e)}")
 
 def create_or_merge_node(
     neo4j_connection: Neo4jConnection,
@@ -356,33 +371,52 @@ def parse_secondary_accessions_as_metabolite_nodes(metabolite_element: ET.Elemen
 
 def parse_synonyms(metabolite_element: ET.Element, accession_id: str, neo4j_connection: Neo4jConnection):
     """
-    Parses <synonyms> for a metabolite, creates Synonym nodes, and links them to the Metabolite.
+    Parses <synonyms> for a metabolite and creates a SynonymIndex node with array storage.
+    This replaces the legacy approach of creating individual Synonym nodes and HAS_SYNONYM relationships.
     """
     synonyms_root = metabolite_element.find("synonyms")
     if synonyms_root is not None:
-        
+        # Collect all synonyms into a list
+        synonym_list = []
         for syn_el in synonyms_root.findall("synonym"):
             synonym_text = syn_el.text.strip() if syn_el.text is not None and syn_el.text and syn_el.text.strip() else None
             if synonym_text:
-                create_or_merge_node(
-                    neo4j_connection=neo4j_connection,
-                    label="Synonym",
-                    primary_key="synonymText",
-                    properties={"synonymText": synonym_text}
-                )
-                create_or_merge_relationship(
-                    neo4j_connection=neo4j_connection,
-                    subject_node_id=accession_id,
-                    relationship_type="HAS_SYNONYM",
-                    object_node_id=synonym_text,
-                    subject_label="Metabolite",
-                    object_label="Synonym",
-                    subject_key="accession",
-                    object_key="synonymText"
-                )
-                
+                synonym_list.append(synonym_text)
         
-
+        # Only create SynonymIndex if we have synonyms
+        if synonym_list:
+            # Get metabolite name for canonical reference
+            metabolite_name_query = """
+            MATCH (m:Metabolite {accession: $acc})
+            RETURN m.name as name
+            """
+            name_result = neo4j_connection.run_query(metabolite_name_query, {"acc": accession_id})
+            metabolite_name = name_result[0]['name'] if name_result else accession_id
+            
+            # Create SynonymIndex node with synonym array
+            synonym_index_id = f"{accession_id}_synonyms"
+            create_or_merge_node(
+                neo4j_connection=neo4j_connection,
+                label="SynonymIndex",
+                primary_key="canonical",
+                properties={
+                    "canonical": metabolite_name,
+                    "name": metabolite_name,
+                    "synonyms": synonym_list
+                }
+            )
+            
+            # Create HAS_SYNONYM_INDEX relationship
+            create_or_merge_relationship(
+                neo4j_connection=neo4j_connection,
+                subject_node_id=accession_id,
+                relationship_type="HAS_SYNONYM_INDEX",
+                object_node_id=metabolite_name,
+                subject_label="Metabolite",
+                object_label="SynonymIndex",
+                subject_key="accession",
+                object_key="canonical"
+            )
 
 def parse_taxonomy(metabolite_element: ET.Element, accession_id: str, neo4j_connection: Neo4jConnection):
     """
@@ -886,32 +920,31 @@ def parse_general_references(metabolite_element: ET.Element, accession_id: str, 
     Parses <general_references> for a metabolite, creating GeneralReference nodes.
     """
     general_refs_el = metabolite_element.find("general_references")
-    if general_refs_el is None:
-        return
-    for ref_el in general_refs_el.findall("reference"):
-        ref_text_val = get_text(ref_el, "reference_text")
-        ref_pubmed_val = get_text(ref_el, "pubmed_id")
-        gen_ref_id = f"genRef_{accession_id}_{(ref_pubmed_val or '')}_{len(ref_text_val or '')}"
-        create_or_merge_node(
-            neo4j_connection=neo4j_connection,
-            label="GeneralReference",
-            primary_key="generalRefId",
-            properties={
-                "generalRefId": gen_ref_id,
-                "reference_text": ref_text_val,
-                "pubmed_id": ref_pubmed_val
-            }
-        )
-        create_or_merge_relationship(
-            neo4j_connection=neo4j_connection,
-            subject_node_id=accession_id,
-            relationship_type="HAS_GENERAL_REFERENCE",
-            object_node_id=gen_ref_id,
-            subject_label="Metabolite",
-            object_label="GeneralReference",
-            subject_key="accession",
-            object_key="generalRefId"
-        )
+    if general_refs_el is not None:
+        for ref_el in general_refs_el.findall("reference"):
+            ref_text_val = get_text(ref_el, "reference_text")
+            ref_pubmed_val = get_text(ref_el, "pubmed_id")
+            gen_ref_id = f"genRef_{accession_id}_{(ref_pubmed_val or '')}_{len(ref_text_val or '')}"
+            create_or_merge_node(
+                neo4j_connection=neo4j_connection,
+                label="GeneralReference",
+                primary_key="generalRefId",
+                properties={
+                    "generalRefId": gen_ref_id,
+                    "reference_text": ref_text_val,
+                    "pubmed_id": ref_pubmed_val
+                }
+            )
+            create_or_merge_relationship(
+                neo4j_connection=neo4j_connection,
+                subject_node_id=accession_id,
+                relationship_type="HAS_GENERAL_REFERENCE",
+                object_node_id=gen_ref_id,
+                subject_label="Metabolite",
+                object_label="GeneralReference",
+                subject_key="accession",
+                object_key="generalRefId"
+            )
 
 ###########################################################################
 # MAIN METABOLITE PARSER
@@ -1168,29 +1201,51 @@ def parse_general_references_protein(protein_element: ET.Element, protein_access
 
 def parse_synonyms_protein(protein_element: ET.Element, protein_accession: str, neo4j_connection: Neo4jConnection):
     """
-    Parses <synonyms> from a protein element, creating Synonym nodes.
+    Parses <synonyms> from a protein element and creates a SynonymIndex node with array storage.
+    This replaces the legacy approach of creating individual Synonym nodes and HAS_SYNONYM relationships.
     """
     synonyms_el = protein_element.find("synonyms")
     if synonyms_el is not None:
+        # Collect all synonyms into a list
+        synonym_list = []
         for syn_el in synonyms_el.findall("synonym"):
             synonym_text = syn_el.text.strip() if syn_el.text else None
             if synonym_text:
-                create_or_merge_node(
-                    neo4j_connection=neo4j_connection,
-                    label="Synonym",
-                    primary_key="synonymText",
-                    properties={"synonymText": synonym_text}
-                )
-                create_or_merge_relationship(
-                    neo4j_connection=neo4j_connection,
-                    subject_node_id=protein_accession,
-                    relationship_type="HAS_SYNONYM",
-                    object_node_id=synonym_text,
-                    subject_label="Protein",
-                    object_label="Synonym",
-                    subject_key="proteinAcc",
-                    object_key="synonymText"
-                )
+                synonym_list.append(synonym_text)
+        
+        # Only create SynonymIndex if we have synonyms
+        if synonym_list:
+            # Get protein name for canonical reference
+            protein_name_query = """
+            MATCH (p:Protein {proteinAcc: $acc})
+            RETURN p.name as name
+            """
+            name_result = neo4j_connection.run_query(protein_name_query, {"acc": protein_accession})
+            protein_name = name_result[0]['name'] if name_result else protein_accession
+            
+            # Create SynonymIndex node with synonym array
+            create_or_merge_node(
+                neo4j_connection=neo4j_connection,
+                label="SynonymIndex",
+                primary_key="canonical",
+                properties={
+                    "canonical": protein_name,
+                    "name": protein_name,
+                    "synonyms": synonym_list
+                }
+            )
+            
+            # Create HAS_SYNONYM_INDEX relationship
+            create_or_merge_relationship(
+                neo4j_connection=neo4j_connection,
+                subject_node_id=protein_accession,
+                relationship_type="HAS_SYNONYM_INDEX",
+                object_node_id=protein_name,
+                subject_label="Protein",
+                object_label="SynonymIndex",
+                subject_key="proteinAcc",
+                object_key="canonical"
+            )
 
 def parse_pathways_protein(protein_element: ET.Element, protein_accession: str, neo4j_connection: Neo4jConnection):
     """

@@ -123,8 +123,8 @@ query_prompt = PromptTemplate.from_template("""
     ```
     MATCH (m:Metabolite)
     WHERE toLower(m.name) = toLower('metabolite_name') 
-    OR EXISTS {{ MATCH (m)-[:HAS_SYNONYM]->(s:Synonym) 
-                WHERE toLower(s.synonymText) = toLower('metabolite_name') }}
+    OR EXISTS {{ MATCH (m)-[:HAS_SYNONYM_INDEX]->(si:SynonymIndex) 
+                WHERE any(syn IN si.synonyms WHERE toLower(syn) = toLower('metabolite_name')) }}
     ```
     
     for pathways, only return the pathway name.

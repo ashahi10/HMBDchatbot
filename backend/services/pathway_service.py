@@ -104,8 +104,8 @@ class PathwayService:
             direct_query = """
             MATCH (m:Metabolite)-[:INVOLVED_IN_PATHWAY]->(p:Pathway)
             WHERE toLower(m.name) = toLower($name)
-            OR EXISTS { MATCH (m)-[:HAS_SYNONYM]->(s:Synonym) 
-                       WHERE toLower(s.synonymText) = toLower($name) }
+            OR EXISTS { MATCH (m)-[:HAS_SYNONYM_INDEX]->(si:SynonymIndex) 
+                       WHERE any(syn IN si.synonyms WHERE toLower(syn) = toLower($name)) }
             RETURN p.pathway_name AS name, p.smpdb_id AS smpdb_id, p.kegg_map_id AS kegg_id
             """
             
@@ -150,8 +150,8 @@ class PathwayService:
             accession_query = """
             MATCH (m:Metabolite)
             WHERE toLower(m.name) = toLower($name)
-            OR EXISTS { MATCH (m)-[:HAS_SYNONYM]->(s:Synonym) 
-                      WHERE toLower(s.synonymText) = toLower($name) }
+            OR EXISTS { MATCH (m)-[:HAS_SYNONYM_INDEX]->(si:SynonymIndex) 
+                      WHERE any(syn IN si.synonyms WHERE toLower(syn) = toLower($name)) }
             RETURN m.accession AS accession LIMIT 1
             """
             

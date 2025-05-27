@@ -1,6 +1,6 @@
 from typing import Dict, Any, List, Optional
-from backend.utils.neo4j_connection import Neo4jConnection
-from backend.utils.cache_manager import CacheManager
+from .neo4j_connection import Neo4jConnection
+from .cache_manager import CacheManager
 
 def infer_property_type(value: Any) -> str:
     if isinstance(value, bool):

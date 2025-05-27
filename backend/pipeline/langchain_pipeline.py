@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 from backend.services.llm_service import MultiLLMService
 from backend.pipeline.prompts import entity_prompt, query_plan_prompt, query_prompt, summary_prompt, query_necessity_prompt, general_answer_prompt, intent_splitting_prompt, aggregator_prompt
 from backend.utils.enrich_links import inject_hyperlinks
+from backend.pipeline.optimized_entity_matcher import OptimizedEntityMatcher
 
 load_dotenv()
 
@@ -51,6 +52,9 @@ class LangChainPipeline:
         # Add Qwen API keys
         self.env_qwen_api_key = os.getenv("QWEN_API")
         self.env_qwen_api_key_generation = os.getenv("QWEN")
+
+        # Initialize optimized entity matcher for Phase 3 integration
+        self.entity_matcher = OptimizedEntityMatcher(neo4j_connection)
 
         self.entity_parser = PydanticOutputParser(pydantic_object=EntityList)
         self.query_plan_parser = PydanticOutputParser(pydantic_object=QueryPlan)
@@ -317,7 +321,37 @@ class LangChainPipeline:
                 yield sse_message
 
     async def _match_entities(self, entity_name: str, entity_type: str) -> List[dict]:
-        pass
+        """
+        Match entities using the optimized entity matcher with SynonymIndex support.
+        
+        Args:
+            entity_name: Name of the entity to match
+            entity_type: Type of entity (e.g., "Metabolite")
+            
+        Returns:
+            List of matched entities with confidence scores
+        """
+        try:
+            if entity_type.lower() == "metabolite":
+                # Use the optimized entity matcher for metabolites
+                results = await asyncio.to_thread(
+                    self.entity_matcher.find_metabolite, 
+                    entity_name
+                )
+                return results
+            else:
+                # For non-metabolite entities, fall back to basic Neo4j query
+                query = f"""
+                MATCH (n:{entity_type})
+                WHERE toLower(n.name) = toLower($name)
+                RETURN n.name as name, n.accession as accession
+                LIMIT 5
+                """
+                results = self.neo4j_connection.run_query(query, parameters={"name": entity_name})
+                return results
+        except Exception as e:
+            print(f"Error in entity matching for {entity_name}: {e}")
+            return []
 
     def _merge_summaries(self, neo4j_summary: str, api_summary: str) -> str:
         # HMDB API integration temporarily disabled
@@ -776,8 +810,8 @@ class LangChainPipeline:
                             more_results = self.neo4j_connection.run_query(f"""
                                 MATCH (m:Metabolite)
                                 WHERE toLower(m.name) = toLower('{metabolite}')
-                                OR EXISTS {{ MATCH (m)-[:HAS_SYNONYM]->(s:Synonym) 
-                                            WHERE toLower(s.synonymText) = toLower('{metabolite}') }}
+                                OR EXISTS {{ MATCH (m)-[:HAS_SYNONYM_INDEX]->(si:SynonymIndex) 
+                                            WHERE any(syn IN si.synonyms WHERE toLower(syn) = toLower('{metabolite}')) }}
                                 RETURN m.description
                             """)
                             if more_results:
@@ -1571,8 +1605,8 @@ class LangChainPipeline:
                             more_results = self.neo4j_connection.run_query(f"""
                                 MATCH (m:Metabolite)
                                 WHERE toLower(m.name) = toLower('{metabolite}')
-                                OR EXISTS {{ MATCH (m)-[:HAS_SYNONYM]->(s:Synonym) 
-                                            WHERE toLower(s.synonymText) = toLower('{metabolite}') }}
+                                OR EXISTS {{ MATCH (m)-[:HAS_SYNONYM_INDEX]->(si:SynonymIndex) 
+                                            WHERE any(syn IN si.synonyms WHERE toLower(syn) = toLower('{metabolite}')) }}
                                 RETURN m.description
                             """)
                             if more_results:

@@ -4,7 +4,7 @@ from typing import List, Dict, Optional, Any
 import json
 
 # Import our cache manager
-from backend.utils.cache_manager import CacheManager
+from .cache_manager import CacheManager
 
 class Neo4jConnection:
 
