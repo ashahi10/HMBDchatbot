@@ -728,6 +728,236 @@ class HMDBApiClient:
         
         return result
 
+    def get_all_spectra_for_hmdb_id(self, hmdb_id: str) -> Dict[str, Any]:
+        """
+        Retrieve ALL available spectra for the given HMDB ID
+        
+        Args:
+            hmdb_id: HMDB identifier (e.g. "HMDB0000001")
+            
+        Returns:
+            Dictionary containing all spectra data or error information
+        """
+        endpoint = f"metabolites/{hmdb_id}/spectra"
+        
+        # Use GET request for spectra retrieval
+        response = self.get(endpoint)
+        
+        if response is None:
+            return {
+                "success": False,
+                "data": None,
+                "metadata": {"hmdb_id": hmdb_id, "endpoint": endpoint},
+                "errors": ["Failed to retrieve data from HMDB API"]
+            }
+
+        if not isinstance(response, (dict, list)):
+            return {
+                "success": False,
+                "data": None,
+                "metadata": {"hmdb_id": hmdb_id, "endpoint": endpoint},
+                "errors": [f"Invalid response format: expected dict or list, got {type(response)}"]
+            }
+        
+        all_spectra = []
+        spectrum_types_found = []
+        
+        if isinstance(response, dict):
+            # Look for spectra data in all HMDB fields
+            for spectra_field in ['c_ms', 'ms_ms', 'nmr', 'ms_ir']:
+                if spectra_field in response and response[spectra_field]:
+                    spectra_list = response[spectra_field]
+                    if isinstance(spectra_list, list) and len(spectra_list) > 0:
+                        spectrum_types_found.append(f"{spectra_field} ({len(spectra_list)} spectra)")
+                        
+                        # Process ALL spectra in this category
+                        for i, spectrum_data in enumerate(spectra_list):
+                            processed_spectrum = self._process_single_spectrum(
+                                spectrum_data, hmdb_id, endpoint, spectra_field, i + 1, len(spectra_list)
+                            )
+                            if processed_spectrum["success"]:
+                                all_spectra.append(processed_spectrum)
+                            else:
+                                print(f"[SPECTRA] Failed to process {spectra_field} spectrum {i+1}: {processed_spectrum['errors']}")
+                                
+        elif isinstance(response, list):
+            if len(response) == 0:
+                return {
+                    "success": False,
+                    "data": None,
+                    "metadata": {"hmdb_id": hmdb_id, "endpoint": endpoint},
+                    "errors": ["Empty spectra list returned"]
+                }
+            
+            # Process all spectra in the list
+            for i, spectrum_data in enumerate(response):
+                processed_spectrum = self._process_single_spectrum(
+                    spectrum_data, hmdb_id, endpoint, "direct_list", i + 1, len(response)
+                )
+                if processed_spectrum["success"]:
+                    all_spectra.append(processed_spectrum)
+        
+        if not all_spectra:
+            return {
+                "success": False,
+                "data": None,
+                "metadata": {"hmdb_id": hmdb_id, "endpoint": endpoint},
+                "errors": ["No valid spectra found in any of the expected fields (c_ms, ms_ms, nmr, ms_ir)"]
+            }
+        
+        print(f"[SPECTRA] Successfully processed {len(all_spectra)} spectra for {hmdb_id}")
+        print(f"[SPECTRA] Found spectrum types: {', '.join(spectrum_types_found)}")
+        
+        return {
+            "success": True,
+            "data": all_spectra,
+            "metadata": {
+                "hmdb_id": hmdb_id,
+                "endpoint": endpoint,
+                "total_spectra": len(all_spectra),
+                "spectrum_types": spectrum_types_found,
+                "processing_timestamp": time.time()
+            },
+            "errors": None
+        }
+
+    def _process_single_spectrum(self, spectrum_data: dict, hmdb_id: str, endpoint: str, 
+                                spectrum_type: str, index: int, total: int) -> Dict[str, Any]:
+        """
+        Process a single spectrum from the collection
+        
+        Args:
+            spectrum_data: Individual spectrum data
+            hmdb_id: HMDB identifier
+            endpoint: API endpoint used
+            spectrum_type: Type of spectrum (c_ms, ms_ms, etc.)
+            index: Index of this spectrum in its category
+            total: Total number of spectra in this category
+            
+        Returns:
+            Processed spectrum data
+        """
+        # Extract and validate peaks data
+        peaks = spectrum_data.get('peaks', [])
+        if not isinstance(peaks, list):
+            return {
+                "success": False,
+                "data": None,
+                "metadata": {"hmdb_id": hmdb_id, "endpoint": endpoint, "spectrum_type": spectrum_type, "index": index},
+                "errors": ["Peaks data is not a list"]
+            }
+        
+        if len(peaks) == 0:
+            return {
+                "success": False,
+                "data": None,
+                "metadata": {"hmdb_id": hmdb_id, "endpoint": endpoint, "spectrum_type": spectrum_type, "index": index},
+                "errors": ["No peaks data found in spectrum"]
+            }
+        
+        # Validate peak structure
+        validated_peaks = []
+        validation_errors = []
+        
+        for i, peak in enumerate(peaks):
+            if not isinstance(peak, dict):
+                validation_errors.append(f"Peak {i} is not a dictionary")
+                continue
+            
+            # Check for required fields
+            if 'mass_charge' not in peak:
+                validation_errors.append(f"Peak {i} missing mass_charge")
+                continue
+            
+            if 'intensity' not in peak:
+                validation_errors.append(f"Peak {i} missing intensity")
+                continue
+            
+            # Validate and convert data types
+            try:
+                mass_charge = float(peak['mass_charge'])
+                intensity = float(peak['intensity'])
+                
+                if mass_charge < 0:
+                    validation_errors.append(f"Peak {i} has negative mass_charge: {mass_charge}")
+                    continue
+                
+                if intensity < 0:
+                    validation_errors.append(f"Peak {i} has negative intensity: {intensity}")
+                    continue
+                
+                validated_peaks.append({
+                    'mass_charge': mass_charge,
+                    'intensity': intensity,
+                    'annotation': peak.get('annotation', None)
+                })
+                
+            except (ValueError, TypeError) as e:
+                validation_errors.append(f"Peak {i} has invalid numeric data: {e}")
+                continue
+        
+        # Check if we have any valid peaks after validation
+        if len(validated_peaks) == 0:
+            return {
+                "success": False,
+                "data": None,
+                "metadata": {"hmdb_id": hmdb_id, "endpoint": endpoint, "spectrum_type": spectrum_type, "index": index},
+                "errors": ["No valid peaks found after validation"] + validation_errors
+            }
+        
+        # Extract metadata
+        metadata_fields = {
+            "spectrum_type": spectrum_data.get('spectrum_type', 'Unknown'),
+            "instrument_type": spectrum_data.get('instrument_type', 'Unknown'),
+            "chromatography_type": spectrum_data.get('chromatography_type', None),
+            "sample_concentration": spectrum_data.get('sample_concentration', None),
+            "solvent": spectrum_data.get('solvent', None),
+            "sample_temperature": spectrum_data.get('sample_temperature', None),
+            "sample_ph": spectrum_data.get('sample_ph', None),
+            "chemical_shift_reference": spectrum_data.get('chemical_shift_reference', None),
+            "nucleus": spectrum_data.get('nucleus', None),
+            "frequency": spectrum_data.get('frequency', None),
+            "splash_key": spectrum_data.get('splash_key', None)
+        }
+        
+        # Prepare successful response
+        processed_data = {
+            "peaks": validated_peaks,
+            "spectrum_type": metadata_fields["spectrum_type"],
+            "instrument_type": metadata_fields["instrument_type"],
+            "chromatography_type": metadata_fields["chromatography_type"],
+            "sample_conditions": {
+                "concentration": metadata_fields["sample_concentration"],
+                "solvent": metadata_fields["solvent"],
+                "temperature": metadata_fields["sample_temperature"],
+                "ph": metadata_fields["sample_ph"]
+            },
+            "technical_details": {
+                "nucleus": metadata_fields["nucleus"],
+                "frequency": metadata_fields["frequency"],
+                "chemical_shift_reference": metadata_fields["chemical_shift_reference"],
+                "splash_key": metadata_fields["splash_key"]
+            }
+        }
+        
+        response_metadata = {
+            "hmdb_id": hmdb_id,
+            "endpoint": endpoint,
+            "spectrum_category": spectrum_type,
+            "spectrum_index": index,
+            "total_in_category": total,
+            "total_peaks": len(validated_peaks),
+            "validation_warnings": validation_errors if validation_errors else None,
+            "processing_timestamp": time.time()
+        }
+        
+        return {
+            "success": True,
+            "data": processed_data,
+            "metadata": response_metadata,
+            "errors": validation_errors if validation_errors else None
+        }
+
     def get_spectra_for_hmdb_id(self, hmdb_id: str) -> Dict[str, Any]:
         """
         Fetch spectral data for a specific HMDB ID using the GET /spectra/ endpoint.

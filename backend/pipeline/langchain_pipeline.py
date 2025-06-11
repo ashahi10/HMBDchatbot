@@ -1224,90 +1224,171 @@ class LangChainPipeline:
             spectra_result = self.spectra_integrator.process_spectra_query(user_question)
             if spectra_result.get("is_spectra_query", False):
                 print(f"\n[DEBUG] Spectra query detected!")
+                print(f"[DEBUG] Spectra result structure: {json.dumps(spectra_result, indent=2, default=str)}")
                 yield self._format_message("Thinking", "Detected a spectrum-related query. Processing spectral data...")
                 
-                # Process the spectra request
-                result = spectra_result.get("result", {})
+                # Process the spectra request - use spectra_result directly, not a nested "result"
+                print(f"[DEBUG] Processing spectra_result directly")
                 
-                if result.get("success", False):
-                    # We have successful spectra data - extract from the correct structure
-                    spectra_response = result.get("spectra_data", {})
-                    spectra_data = spectra_response.get("data", {}) if spectra_response.get("success", False) else None
+                if spectra_result.get("success", False):
+                    # We have successful spectra data - extract from nested spectra_data structure
+                    spectra_data_container = spectra_result.get("spectra_data", {})
+                    all_spectra = spectra_data_container.get("data", [])
+                    metadata = spectra_data_container.get("metadata", {})
                     
-                    if spectra_data:
-                        # Process the spectrum data
-                        processed_spectrum = SpectraProcessor.process_raw_spectrum(
-                            result.get("hmdb_id", "Unknown"),
-                            spectra_data
-                        )
+                    print(f"[DEBUG] Number of spectra available: {len(all_spectra)}")
+                    print(f"[DEBUG] Spectrum types found: {metadata.get('spectrum_types', [])}")
+                    
+                    if all_spectra:
+                        # Save ALL spectrum data to debug output folder
+                        try:
+                            import os
+                            debug_dir = "debug_output"
+                            os.makedirs(debug_dir, exist_ok=True)
+                            
+                            hmdb_id = metadata.get("hmdb_id", "unknown")
+                            all_spectra_file = os.path.join(debug_dir, f"all_spectra_data_{hmdb_id}.json")
+                            with open(all_spectra_file, 'w') as f:
+                                json.dump({
+                                    "hmdb_id": hmdb_id,
+                                    "metadata": metadata,
+                                    "all_spectra": all_spectra,
+                                    "full_result": spectra_result
+                                }, f, indent=2, default=str)
+                            print(f"[DEBUG] Saved all spectra data to: {all_spectra_file}")
+                        except Exception as save_error:
+                            print(f"[DEBUG] Failed to save spectra data: {save_error}")
                         
-                        if processed_spectrum:
-                            # Generate visualization
-                            try:
-                                visualization_result = self.spectra_visualization.create_spectrum_visualization(
-                                    processed_spectrum,
-                                    output_format=PlotFormat.INTERACTIVE_HTML,
-                                    style=PlotStyle.SCIENTIFIC
-                                )
+                        # Start building the complete response
+                        hmdb_id = metadata.get("hmdb_id", "Unknown")
+                        total_spectra = len(all_spectra)
+                        spectrum_types = metadata.get("spectrum_types", [])
+                        
+                        response = f"## Complete Spectrum Analysis for {hmdb_id}\n\n"
+                        response += f"**Found {total_spectra} spectra** across {len(spectrum_types)} spectrum types:\n"
+                        for spec_type in spectrum_types:
+                            response += f"- {spec_type}\n"
+                        response += "\n---\n\n"
+                        
+                        # Process each spectrum
+                        processed_count = 0
+                        visualization_files = []
+                        
+                        for spectrum_index, spectrum_result in enumerate(all_spectra):
+                            if not spectrum_result.get("success", False):
+                                continue
                                 
-                                if visualization_result.get("success", False):
-                                    # Send the spectrum analysis
-                                    hmdb_id = result.get("hmdb_id", "Unknown")
-                                    response = f"## Spectrum Analysis for {hmdb_id}\n\n"
-                                    response += f"**Spectrum Type:** {processed_spectrum.metadata.spectrum_type.value}\n"
+                            try:
+                                spectrum_data = spectrum_result.get("data", {})
+                                spectrum_metadata = spectrum_result.get("metadata", {})
+                                spectrum_category = spectrum_metadata.get("spectrum_category", "unknown")
+                                spectrum_idx = spectrum_metadata.get("spectrum_index", spectrum_index + 1)
+                                
+                                print(f"[DEBUG] Processing spectrum {spectrum_idx} of type {spectrum_category}...")
+                                
+                                # Process the spectrum data
+                                processed_spectrum = SpectraProcessor.process_raw_spectrum(hmdb_id, spectrum_data)
+                                
+                                if processed_spectrum:
+                                    processed_count += 1
+                                    
+                                    # Add spectrum info to response
+                                    response += f"### Spectrum {spectrum_idx} - {spectrum_category.upper()}\n"
+                                    response += f"**Type:** {processed_spectrum.metadata.spectrum_type.value}\n"
+                                    response += f"**Instrument:** {processed_spectrum.metadata.instrument_type.value}\n"
                                     response += f"**Quality Score:** {processed_spectrum.quality_score:.2f}\n"
-                                    response += f"**Number of Peaks:** {len(processed_spectrum.peaks)}\n\n"
+                                    response += f"**Number of Peaks:** {len(processed_spectrum.peaks)}\n"
+                                    
+                                    # Add experimental conditions if available
+                                    if processed_spectrum.metadata.solvent:
+                                        response += f"**Solvent:** {processed_spectrum.metadata.solvent}\n"
+                                    if processed_spectrum.metadata.sample_concentration:
+                                        response += f"**Concentration:** {processed_spectrum.metadata.sample_concentration}\n"
                                     
                                     # Add interpretation
-                                    llm_data = SpectraProcessor.format_for_llm_reasoning(processed_spectrum)
-                                    response += "**Key Spectral Features:**\n"
-                                    for hint in llm_data.get("interpretation_hints", []):
-                                        response += f"- {hint}\n"
+                                    try:
+                                        llm_data = SpectraProcessor.format_for_llm_reasoning(processed_spectrum)
+                                        if llm_data.get("interpretation_hints"):
+                                            response += "\n**Key Features:**\n"
+                                            for hint in llm_data.get("interpretation_hints", []):
+                                                response += f"- {hint}\n"
+                                        
+                                        if llm_data.get("key_peaks"):
+                                            response += "\n**Top Peaks:**\n"
+                                            for peak in llm_data.get("key_peaks", [])[:3]:  # Show top 3 peaks per spectrum
+                                                response += f"- m/z {peak['mz']:.2f} (intensity: {peak['intensity']:.3f})\n"
+                                    except Exception as llm_error:
+                                        print(f"[ERROR] LLM formatting failed for spectrum {spectrum_idx}: {llm_error}")
                                     
-                                    response += "\n**Top Peaks:**\n"
-                                    for peak in llm_data.get("key_peaks", [])[:5]:
-                                        response += f"- m/z {peak['mz']:.2f} (intensity: {peak['intensity']:.3f})\n"
+                                    # Generate visualization
+                                    try:
+                                        visualization_result = self.spectra_visualization.create_spectrum_visualization(
+                                            processed_spectrum,
+                                            output_format=PlotFormat.INTERACTIVE_HTML,
+                                            style=PlotStyle.SCIENTIFIC
+                                        )
+                                        
+                                        if visualization_result.get("success", False):
+                                            # Save visualization file
+                                            viz_filename = f"spectrum_plot_{hmdb_id}_{spectrum_category}_{spectrum_idx}.html"
+                                            viz_file = os.path.join(debug_dir, viz_filename)
+                                            
+                                            graph_data = visualization_result.get("graph_data", {})
+                                            if graph_data.get("content"):
+                                                with open(viz_file, 'w') as f:
+                                                    f.write(graph_data["content"])
+                                                visualization_files.append(viz_filename)
+                                                print(f"[DEBUG] Saved spectrum plot to: {viz_file}")
+                                                response += f"📊 **Visualization:** `{viz_filename}`\n"
+                                        
+                                    except Exception as viz_error:
+                                        print(f"[ERROR] Visualization failed for spectrum {spectrum_idx}: {viz_error}")
+                                        response += f"⚠️ **Visualization failed:** {viz_error}\n"
                                     
-                                    # Include the interactive plot
-                                    graph_data = visualization_result.get("graph_data", {})
-                                    if graph_data.get("content"):
-                                        response += "\n**Interactive Spectrum Plot:**\n"
-                                        response += graph_data["content"]
+                                    response += "\n---\n\n"
+                                
+                                else:
+                                    print(f"[ERROR] Failed to process spectrum {spectrum_idx} of type {spectrum_category}")
                                     
-                                    yield self._format_message("Answer", response)
-                                    yield self._format_message("DONE", "")
-                                    return
-                                    
-                            except Exception as viz_error:
-                                print(f"[ERROR] Visualization failed: {viz_error}")
-                                # Fall back to text-only response
-                                hmdb_id = result.get("hmdb_id", "Unknown")
-                                response = f"Spectrum data retrieved for {hmdb_id}, but visualization failed. "
-                                response += f"Found {len(processed_spectrum.peaks)} peaks with quality score {processed_spectrum.quality_score:.2f}"
-                                yield self._format_message("Answer", response)
-                                yield self._format_message("DONE", "")
-                                return
+                            except Exception as process_error:
+                                print(f"[ERROR] Error processing spectrum {spectrum_index + 1}: {process_error}")
+                                continue
                         
-                        else:
-                            yield self._format_message("Answer", "Spectrum data was found but could not be processed properly.")
-                            yield self._format_message("DONE", "")
-                            return
+                        # Add summary
+                        response += f"## Summary\n"
+                        response += f"- **Total spectra found:** {total_spectra}\n"
+                        response += f"- **Successfully processed:** {processed_count}\n"
+                        response += f"- **Visualization files created:** {len(visualization_files)}\n\n"
+                        
+                        if visualization_files:
+                            response += "**Interactive plots saved to debug_output folder:**\n"
+                            for viz_file in visualization_files:
+                                response += f"- `{viz_file}`\n"
+                        
+                        # Send the complete response
+                        yield self._format_message("Answer", response)
+                        yield self._format_message("DONE", "")
+                        return
                     
                     else:
-                        yield self._format_message("Answer", "No spectrum data available for the requested compound.")
+                        print(f"[ERROR] No spectrum data available in result")
+                        hmdb_id = metadata.get("hmdb_id", "Unknown")
+                        yield self._format_message("Answer", f"No spectrum data available for {hmdb_id}. The compound may not have spectra in the HMDB database.")
                         yield self._format_message("DONE", "")
                         return
                 
-                elif result.get("disambiguation_required", False):
+                elif spectra_result.get("disambiguation_required", False):
                     # Need user to disambiguate
-                    prompt = result.get("disambiguation_prompt", "Please provide more specific information.")
+                    prompt = spectra_result.get("disambiguation_prompt", "Please provide more specific information.")
                     yield self._format_message("Answer", prompt)
                     yield self._format_message("DONE", "")
                     return
                 
                 else:
                     # Error in spectra processing
-                    error_msg = result.get("error", "Unknown error in spectrum processing")
+                    error_msg = spectra_result.get("error", "Unknown error in spectrum processing")
+                    print(f"[ERROR] Spectra processing error: {error_msg}")
+                    print(f"[ERROR] Full result structure: {json.dumps(spectra_result, indent=2, default=str)}")
                     yield self._format_message("Answer", f"Sorry, I encountered an issue while processing your spectrum request: {error_msg}")
                     yield self._format_message("DONE", "")
                     return

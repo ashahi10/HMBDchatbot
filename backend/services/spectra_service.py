@@ -414,7 +414,7 @@ class SpectraProcessor:
                 'temperature': spectrum.metadata.temperature,
                 'ph': spectrum.metadata.ph
             },
-            'interpretation_hints': cls._generate_interpretation_hints(spectrum)
+            'interpretation_hints': SpectraProcessor._generate_interpretation_hints(spectrum)
         }
     
     @staticmethod
