@@ -13,6 +13,10 @@ from backend.services.llm_service import MultiLLMService
 from backend.pipeline.prompts import entity_prompt, query_plan_prompt, query_prompt, summary_prompt, query_necessity_prompt, general_answer_prompt, intent_splitting_prompt, aggregator_prompt
 from backend.utils.enrich_links import inject_hyperlinks
 from backend.pipeline.optimized_entity_matcher import OptimizedEntityMatcher
+# Phase 4: Import spectra services
+from backend.services.spectra_trigger_service import SpectraPipelineIntegrator
+from backend.services.spectra_service import SpectraProcessor
+from backend.services.spectra_graph_service import SpectraVisualizationPipeline, PlotFormat, PlotStyle
 
 load_dotenv()
 
@@ -45,8 +49,8 @@ class LangChainPipeline:
         self.llm_service = llm_service
         self.neo4j_connection = neo4j_connection
         self.neo4j_schema_text = neo4j_schema_text
-        # Commented out HMDB client but preserved for future use
-        # self.hmdb_client = hmdb_client
+        # HMDB client now activated for spectra endpoint usage
+        self.hmdb_client = hmdb_client
         self.env_groq_api_key = os.getenv("GROQ_API_KEY")
         self.env_groq_api_key_generation = os.getenv("GROQ_API_KEY_GENERATION")
         # Add Qwen API keys
@@ -55,6 +59,10 @@ class LangChainPipeline:
 
         # Initialize optimized entity matcher for Phase 3 integration
         self.entity_matcher = OptimizedEntityMatcher(neo4j_connection)
+        
+        # Phase 4: Initialize spectra services
+        self.spectra_integrator = SpectraPipelineIntegrator(neo4j_connection, hmdb_client)
+        self.spectra_visualization = SpectraVisualizationPipeline()
 
         self.entity_parser = PydanticOutputParser(pydantic_object=EntityList)
         self.query_plan_parser = PydanticOutputParser(pydantic_object=QueryPlan)
@@ -1211,6 +1219,98 @@ class LangChainPipeline:
                 print(f"\n[DEBUG] Multiple intents detected: {intent_info}")
             else:
                 print(f"\n[DEBUG] Single intent detected: {intents[0].intent_type}")
+            
+            # PHASE 4: Check for spectra-related queries and handle them early
+            spectra_result = self.spectra_integrator.process_spectra_query(user_question)
+            if spectra_result.get("is_spectra_query", False):
+                print(f"\n[DEBUG] Spectra query detected!")
+                yield self._format_message("Thinking", "Detected a spectrum-related query. Processing spectral data...")
+                
+                # Process the spectra request
+                result = spectra_result.get("result", {})
+                
+                if result.get("success", False):
+                    # We have successful spectra data - extract from the correct structure
+                    spectra_response = result.get("spectra_data", {})
+                    spectra_data = spectra_response.get("data", {}) if spectra_response.get("success", False) else None
+                    
+                    if spectra_data:
+                        # Process the spectrum data
+                        processed_spectrum = SpectraProcessor.process_raw_spectrum(
+                            result.get("hmdb_id", "Unknown"),
+                            spectra_data
+                        )
+                        
+                        if processed_spectrum:
+                            # Generate visualization
+                            try:
+                                visualization_result = self.spectra_visualization.create_spectrum_visualization(
+                                    processed_spectrum,
+                                    output_format=PlotFormat.INTERACTIVE_HTML,
+                                    style=PlotStyle.SCIENTIFIC
+                                )
+                                
+                                if visualization_result.get("success", False):
+                                    # Send the spectrum analysis
+                                    hmdb_id = result.get("hmdb_id", "Unknown")
+                                    response = f"## Spectrum Analysis for {hmdb_id}\n\n"
+                                    response += f"**Spectrum Type:** {processed_spectrum.metadata.spectrum_type.value}\n"
+                                    response += f"**Quality Score:** {processed_spectrum.quality_score:.2f}\n"
+                                    response += f"**Number of Peaks:** {len(processed_spectrum.peaks)}\n\n"
+                                    
+                                    # Add interpretation
+                                    llm_data = SpectraProcessor.format_for_llm_reasoning(processed_spectrum)
+                                    response += "**Key Spectral Features:**\n"
+                                    for hint in llm_data.get("interpretation_hints", []):
+                                        response += f"- {hint}\n"
+                                    
+                                    response += "\n**Top Peaks:**\n"
+                                    for peak in llm_data.get("key_peaks", [])[:5]:
+                                        response += f"- m/z {peak['mz']:.2f} (intensity: {peak['intensity']:.3f})\n"
+                                    
+                                    # Include the interactive plot
+                                    graph_data = visualization_result.get("graph_data", {})
+                                    if graph_data.get("content"):
+                                        response += "\n**Interactive Spectrum Plot:**\n"
+                                        response += graph_data["content"]
+                                    
+                                    yield self._format_message("Answer", response)
+                                    yield self._format_message("DONE", "")
+                                    return
+                                    
+                            except Exception as viz_error:
+                                print(f"[ERROR] Visualization failed: {viz_error}")
+                                # Fall back to text-only response
+                                hmdb_id = result.get("hmdb_id", "Unknown")
+                                response = f"Spectrum data retrieved for {hmdb_id}, but visualization failed. "
+                                response += f"Found {len(processed_spectrum.peaks)} peaks with quality score {processed_spectrum.quality_score:.2f}"
+                                yield self._format_message("Answer", response)
+                                yield self._format_message("DONE", "")
+                                return
+                        
+                        else:
+                            yield self._format_message("Answer", "Spectrum data was found but could not be processed properly.")
+                            yield self._format_message("DONE", "")
+                            return
+                    
+                    else:
+                        yield self._format_message("Answer", "No spectrum data available for the requested compound.")
+                        yield self._format_message("DONE", "")
+                        return
+                
+                elif result.get("disambiguation_required", False):
+                    # Need user to disambiguate
+                    prompt = result.get("disambiguation_prompt", "Please provide more specific information.")
+                    yield self._format_message("Answer", prompt)
+                    yield self._format_message("DONE", "")
+                    return
+                
+                else:
+                    # Error in spectra processing
+                    error_msg = result.get("error", "Unknown error in spectrum processing")
+                    yield self._format_message("Answer", f"Sorry, I encountered an issue while processing your spectrum request: {error_msg}")
+                    yield self._format_message("DONE", "")
+                    return
             
             # PHASE 4: Add early exit for questions not requiring database lookup
             should_query = await self._should_query_llm_decision(user_question)

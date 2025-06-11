@@ -40,3 +40,11 @@ passlib[bcrypt]>=1.7.4
 
 # API Documentation
 fastapi-swagger-ui>=0.1.0 
+
+# Scientific Computing and Visualization (Phase 4)
+matplotlib>=3.7.0
+seaborn>=0.12.0
+numpy>=1.24.0
+scipy>=1.10.0
+plotly>=5.17.0
+kaleido>=0.2.1

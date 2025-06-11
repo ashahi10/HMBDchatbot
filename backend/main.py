@@ -18,7 +18,7 @@ from backend.services.memory_service import MemoryService
 from backend.services.decision_service import QueryDecisionService
 from backend.pipeline.langchain_pipeline import LangChainPipeline
 from backend.api.query_controller import router as query_router
-# from backend.pipeline.hmdb_api import HMDBApiClient, RateLimiter
+from backend.pipeline.hmdb_api import HMDBApiClient, RateLimiter
 
 import time
 
@@ -51,13 +51,13 @@ async def lifespan(app: FastAPI):
     enable_caching = os.getenv("ENABLE_CACHING", "true").lower() == "true"
 
     # 1) Create rate limiter
-    # rate_limiter = RateLimiter()
+    rate_limiter = RateLimiter()
     
     # 2) Create HMDB Client with caching enabled
-    # hmdb_client = HMDBApiClient(rate_limiter=rate_limiter, use_cache=enable_caching)
+    hmdb_client = HMDBApiClient(rate_limiter=rate_limiter, use_cache=enable_caching)
     
     # 3) Store in app.state
-    # app.state.hmdb_client = hmdb_client
+    app.state.hmdb_client = hmdb_client
 
     # load env variables, changing .env file will allow swapping bw kgs
     neo4j_uri = os.getenv("NEO4J_URI")
@@ -114,7 +114,7 @@ async def lifespan(app: FastAPI):
         llm_service=llm_service,
         neo4j_connection=neo4j_connection,
         neo4j_schema_text=neo4j_schema_text,
-        # hmdb_client=hmdb_client
+        hmdb_client=hmdb_client
     )
     
     # store these in app state to use in routers
