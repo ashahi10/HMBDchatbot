@@ -308,6 +308,10 @@ def inject_hyperlinks(answer: str, records: List[Dict]) -> str:
     with a Markdown link using its corresponding *_url field.
     Uses customizable templates for link text to improve readability.
     """
+    # Handle None or empty records gracefully
+    if not records:
+        return answer
+        
     # List all (id_field, url_field) pairs based on your ID_TO_URL keys
     field_pairs = [
         ("pubchem_id",   "pubchem_id_url"),

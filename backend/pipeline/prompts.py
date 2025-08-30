@@ -65,9 +65,11 @@ query_plan_prompt = PromptTemplate.from_template("""
         Then determine:
         
         1. Whether this question requires querying the Neo4j database
-        2. The query intent (e.g., "find relationships between entities", "get properties of entity", etc.)
+        2. The query intent (e.g., "find relationships between entities", "get properties of entity", "get disease associations", "get concentration data", etc.)
         3. A list of entities that should be used in the query - ONLY include entities that match the database schema
         4. A detailed reasoning for your decision
+        
+        IMPORTANT: If the query involves diseases, disease associations, or asks about medical conditions related to metabolites, mark the intent to include disease citations. This is CRITICAL for scientific accuracy.
         
         Your response should be in the following JSON structure:
         {{
@@ -117,7 +119,19 @@ query_prompt = PromptTemplate.from_template("""
     11.If the query plan indicates that additional external data (e.g., from the HMDB API) might be necessary as a fallback, structure the query to be minimal and efficient for the Neo4j part, returning a primary set of results that can be augmented by external data if needed.                                                                                                                
     12.Do not include more than 4 OPTIONAL MATCH clauses unless the query intent demands retrieving multiple domains of data. Otherwise, prioritize precision and performance.
     13.Entities with confidence > 0.9 should be prioritized in query construction.Ignore entities < 0.5 unless explicitly mentioned in the question.
-    14.When the user asks for a specific property (e.g., 'molecular formula', 'InChIKey', 'SMILES'), translate this to the corresponding schema field (e.g., 'chemical_formula') and ONLY include it in the RETURN clause.                                                                                
+    14.When the user asks for a specific property (e.g., 'molecular formula', 'InChIKey', 'SMILES'), translate this to the corresponding schema field (e.g., 'chemical_formula') and ONLY include it in the RETURN clause.
+    
+    CRITICAL: CITATION REQUIREMENTS FOR DISEASE-METABOLITE ASSOCIATIONS
+    15. **ALWAYS include citations for disease-metabolite associations** when diseases are queried or mentioned:
+        - Include: `OPTIONAL MATCH (d:Disease)-[:HAS_DISEASE_REFERENCE]->(dr:DiseaseReference)`
+        - Return: `dr.pubmed_id AS disease_pubmed_id, dr.reference_text AS disease_citation`
+    16. **ALWAYS include citations for concentration data** when concentration queries are made:
+        - Include: `OPTIONAL MATCH (nc:NormalConcentration)-[:HAS_CONCENTRATION_REF]->(cr:ConcentrationReference)`  
+        - Return: `cr.pubmed_id AS concentration_pubmed_id, cr.reference_text AS concentration_citation`
+    17. **Include general scientific references** for metabolite information when appropriate:
+        - Include: `OPTIONAL MATCH (m:Metabolite)-[:HAS_GENERAL_REFERENCE]->(gr:GeneralReference)`
+        - Return: `gr.pubmed_id AS general_pubmed_id, gr.reference_text AS general_citation`
+    18. **Citation Priority**: Disease associations MUST include citations as they are critical for scientific credibility                                                                                
     SPECIAL HANDLING FOR METABOLITES:
     When querying for Metabolites, ALWAYS check both the metabolite name AND any synonyms using this pattern:
     ```
@@ -158,6 +172,13 @@ summary_prompt = PromptTemplate.from_template("""
     6. **If fallback data is available (via API), you may merge or extend the Neo4j results with it.** Present the final answer as a unified explanation.
 
     7. **NEVER say: "I could not find this", or "fallback triggered". If information is missing, focus on what is known and phrase around the gaps intelligently.**
+
+    8. **CRITICAL: Always include citations when available**:
+        - **Disease associations**: Include citations with PubMed links when disease-metabolite relationships are mentioned
+        - **Concentration data**: Include citations for normal/abnormal concentration values
+        - **Format citations as**: "[PubMed: 12345678](https://pubmed.ncbi.nlm.nih.gov/12345678)" for clickable links
+        - **Group citations**: Create a "References section" at the end if multiple citations are present
+        - **Citation priority**: Disease-metabolite associations MUST have citations for scientific credibility
 
         ---
 

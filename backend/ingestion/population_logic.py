@@ -87,12 +87,43 @@ def create_indexes_and_constraints(neo4j_connection: Neo4jConnection):
         "CREATE CONSTRAINT IF NOT EXISTS FOR (sc:SubcellularLocation) REQUIRE sc.locationName IS UNIQUE",
         "CREATE CONSTRAINT IF NOT EXISTS FOR (pdb:PdbID) REQUIRE pdb.pdbId IS UNIQUE",
         "CREATE CONSTRAINT IF NOT EXISTS FOR (pprop:ProteinProperty) REQUIRE pprop.propertyId IS UNIQUE",
+        # Functional Ontology constraints
+        "CREATE CONSTRAINT IF NOT EXISTS FOR (fot:FunctionalOntologyTerm) REQUIRE fot.termId IS UNIQUE",
+        "CREATE CONSTRAINT IF NOT EXISTS FOR (he:HealthEffect) REQUIRE he.effectId IS UNIQUE",
+        "CREATE CONSTRAINT IF NOT EXISTS FOR (bl:BiologicalLocation) REQUIRE bl.locationId IS UNIQUE",
+        "CREATE CONSTRAINT IF NOT EXISTS FOR (ds:DispositionSource) REQUIRE ds.sourceId IS UNIQUE",
+        "CREATE CONSTRAINT IF NOT EXISTS FOR (ots:OntologyTermSynonym) REQUIRE ots.synonymId IS UNIQUE",
+        # Enhanced Enzyme constraints
+        "CREATE CONSTRAINT IF NOT EXISTS FOR (ep:EnhancedProtein) REQUIRE ep.hmdbp_id IS UNIQUE",
+        "CREATE CONSTRAINT IF NOT EXISTS FOR (pf:ProteinFunction) REQUIRE pf.functionId IS UNIQUE",
+        "CREATE CONSTRAINT IF NOT EXISTS FOR (pd:ProteinDetail) REQUIRE pd.detailId IS UNIQUE",
+        "CREATE CONSTRAINT IF NOT EXISTS FOR (gl:GeneLocation) REQUIRE gl.locationId IS UNIQUE",
+        "CREATE CONSTRAINT IF NOT EXISTS FOR (pr:ProteinReaction) REQUIRE pr.reactionId IS UNIQUE",
         # Create indexes for the new alias relationships to improve query performance
         "CREATE INDEX IF NOT EXISTS FOR ()-[r:IS_ALIAS_OF]-() ON (r)",
         "CREATE INDEX IF NOT EXISTS FOR ()-[r:HAS_ALIAS]-() ON (r)",
         "CREATE INDEX IF NOT EXISTS FOR ()-[r:HAS_SYNONYM_INDEX]-() ON (r)",
         # Create index for the is_secondary property to make filtering efficient
-        "CREATE INDEX IF NOT EXISTS FOR (m:Metabolite) ON (m.is_secondary)"
+        "CREATE INDEX IF NOT EXISTS FOR (m:Metabolite) ON (m.is_secondary)",
+        # Functional Ontology relationship indexes
+        "CREATE INDEX IF NOT EXISTS FOR ()-[r:HAS_HEALTH_EFFECT]-() ON (r)",
+        "CREATE INDEX IF NOT EXISTS FOR ()-[r:HAS_BIOLOGICAL_LOCATION]-() ON (r)",
+        "CREATE INDEX IF NOT EXISTS FOR ()-[r:HAS_DISPOSITION_SOURCE]-() ON (r)",
+        "CREATE INDEX IF NOT EXISTS FOR ()-[r:IS_CHILD_OF]-() ON (r)",
+        "CREATE INDEX IF NOT EXISTS FOR ()-[r:IS_SYNONYM_OF]-() ON (r)",
+        # Additional indexes for fast lookups on node properties
+        "CREATE INDEX IF NOT EXISTS FOR (he:HealthEffect) ON (he.name)",
+        "CREATE INDEX IF NOT EXISTS FOR (bl:BiologicalLocation) ON (bl.name)",
+        "CREATE INDEX IF NOT EXISTS FOR (ds:DispositionSource) ON (ds.name)",
+        "CREATE INDEX IF NOT EXISTS FOR (fot:FunctionalOntologyTerm) ON (fot.term)",
+        "CREATE INDEX IF NOT EXISTS FOR (fot:FunctionalOntologyTerm) ON (fot.category)",
+        # Enhanced Enzyme property indexes for fast lookups
+        "CREATE INDEX IF NOT EXISTS FOR (ep:EnhancedProtein) ON (ep.gene_name)",
+        "CREATE INDEX IF NOT EXISTS FOR (ep:EnhancedProtein) ON (ep.protein_type)",
+        "CREATE INDEX IF NOT EXISTS FOR (ep:EnhancedProtein) ON (ep.uniprot_id)",
+        "CREATE INDEX IF NOT EXISTS FOR (ep:EnhancedProtein) ON (ep.locus)",
+        "CREATE INDEX IF NOT EXISTS FOR (pf:ProteinFunction) ON (pf.general_function)",
+        "CREATE INDEX IF NOT EXISTS FOR (gl:GeneLocation) ON (gl.locus)"
     ]
 
     for command in constraint_commands:
@@ -238,6 +269,306 @@ def parse_synthesis_reference(metabolite_element: ET.Element, accession_id: str,
             object_key="synthesisRefId"
         )
 
+###########################################################################
+# FUNCTIONAL ONTOLOGY PARSING FUNCTIONS
+###########################################################################
+
+def parse_functional_ontology_term_synonyms(neo4j_connection: Neo4jConnection, synonyms_element: ET.Element, term_id: str):
+    """
+    Parses synonyms for an ontology term and creates OntologyTermSynonym nodes.
+    """
+    if synonyms_element is not None:
+        for syn_el in synonyms_element.findall("synonym"):
+            synonym_text = syn_el.text.strip() if syn_el.text else None
+            if synonym_text:
+                synonym_id = f"{term_id}_syn_{hash(synonym_text) % 100000}"
+                create_or_merge_node(
+                    neo4j_connection=neo4j_connection,
+                    label="OntologyTermSynonym",
+                    primary_key="synonymId",
+                    properties={
+                        "synonymId": synonym_id,
+                        "synonym_text": synonym_text,
+                        "term_id": term_id
+                    }
+                )
+                create_or_merge_relationship(
+                    neo4j_connection=neo4j_connection,
+                    subject_node_id=term_id,
+                    relationship_type="IS_SYNONYM_OF",
+                    object_node_id=synonym_id,
+                    subject_label="FunctionalOntologyTerm",
+                    object_label="OntologyTermSynonym",
+                    subject_key="termId",
+                    object_key="synonymId"
+                )
+
+def parse_functional_ontology_descendants(neo4j_connection: Neo4jConnection, descendants_element: ET.Element, metabolite_id: str, parent_term_id: str, category: str):
+    """
+    Recursively parses descendant terms in functional ontology.
+    """
+    if descendants_element is not None:
+        for descendant_el in descendants_element.findall("descendant"):
+            parse_functional_ontology_term(neo4j_connection, descendant_el, metabolite_id, parent_term_id, category)
+
+def parse_functional_ontology_term(neo4j_connection: Neo4jConnection, term_element: ET.Element, metabolite_id: str, parent_term_id: str = None, category: str = ""):
+    """
+    Parses a single functional ontology term and creates appropriate nodes based on category.
+    """
+    term_name = get_text(term_element, "term")
+    definition = get_text(term_element, "definition")
+    level_text = get_text(term_element, "level")
+    term_type = get_text(term_element, "type")
+    parent_id = get_text(term_element, "parent_id")
+    
+    if not term_name:
+        return
+    
+    # Create unique term ID
+    term_id = f"{metabolite_id}_{category}_{hash(term_name) % 100000}"
+    
+    # Create FunctionalOntologyTerm node
+    create_or_merge_node(
+        neo4j_connection=neo4j_connection,
+        label="FunctionalOntologyTerm",
+        primary_key="termId",
+        properties={
+            "termId": term_id,
+            "term": term_name,
+            "definition": definition,
+            "level": level_text,
+            "type": term_type,
+            "parent_id": parent_id,
+            "category": category
+        }
+    )
+    
+    # Create specific typed nodes based on category and term type
+    if category == "health_effect" and term_type == "child":
+        create_health_effect_node(neo4j_connection, term_id, term_name, definition, term_element)
+        create_or_merge_relationship(
+            neo4j_connection=neo4j_connection,
+            subject_node_id=metabolite_id,
+            relationship_type="HAS_HEALTH_EFFECT",
+            object_node_id=f"{term_id}_health",
+            subject_label="Metabolite",
+            object_label="HealthEffect",
+            subject_key="accession",
+            object_key="effectId"
+        )
+    
+    elif category == "biological_location" and term_type == "child":
+        create_biological_location_node(neo4j_connection, term_id, term_name, definition, term_element)
+        create_or_merge_relationship(
+            neo4j_connection=neo4j_connection,
+            subject_node_id=metabolite_id,
+            relationship_type="HAS_BIOLOGICAL_LOCATION",
+            object_node_id=f"{term_id}_location",
+            subject_label="Metabolite",
+            object_label="BiologicalLocation",
+            subject_key="accession",
+            object_key="locationId"
+        )
+    
+    elif category == "source" and term_type == "child":
+        create_disposition_source_node(neo4j_connection, term_id, term_name, definition, term_element)
+        create_or_merge_relationship(
+            neo4j_connection=neo4j_connection,
+            subject_node_id=metabolite_id,
+            relationship_type="HAS_DISPOSITION_SOURCE",
+            object_node_id=f"{term_id}_source",
+            subject_label="Metabolite",
+            object_label="DispositionSource",
+            subject_key="accession",
+            object_key="sourceId"
+        )
+    
+    # Connect to parent term if exists
+    if parent_term_id:
+        create_or_merge_relationship(
+            neo4j_connection=neo4j_connection,
+            subject_node_id=term_id,
+            relationship_type="IS_CHILD_OF",
+            object_node_id=parent_term_id,
+            subject_label="FunctionalOntologyTerm",
+            object_label="FunctionalOntologyTerm",
+            subject_key="termId",
+            object_key="termId"
+        )
+    
+    # Parse synonyms
+    synonyms_element = term_element.find("synonyms")
+    parse_functional_ontology_term_synonyms(neo4j_connection, synonyms_element, term_id)
+    
+    # Parse descendants recursively
+    descendants_element = term_element.find("descendants")
+    parse_functional_ontology_descendants(neo4j_connection, descendants_element, metabolite_id, term_id, category)
+
+def create_health_effect_node(neo4j_connection: Neo4jConnection, term_id: str, term_name: str, definition: str, term_element: ET.Element):
+    """
+    Creates a specific HealthEffect node with enhanced properties.
+    """
+    effect_id = f"{term_id}_health"
+    
+    # Build category path for hierarchical context
+    level = get_text(term_element, "level")
+    category_path = build_category_path(term_element, term_name)
+    
+    # Collect synonyms
+    synonyms_list = []
+    synonyms_element = term_element.find("synonyms")
+    if synonyms_element is not None:
+        for syn_el in synonyms_element.findall("synonym"):
+            synonym_text = syn_el.text.strip() if syn_el.text else None
+            if synonym_text:
+                synonyms_list.append(synonym_text)
+    
+    create_or_merge_node(
+        neo4j_connection=neo4j_connection,
+        label="HealthEffect",
+        primary_key="effectId",
+        properties={
+            "effectId": effect_id,
+            "name": term_name,
+            "definition": definition,
+            "category": category_path,
+            "level": level,
+            "synonyms": synonyms_list,
+            "source_term_id": term_id
+        }
+    )
+
+def create_biological_location_node(neo4j_connection: Neo4jConnection, term_id: str, term_name: str, definition: str, term_element: ET.Element):
+    """
+    Creates a specific BiologicalLocation node with enhanced properties.
+    """
+    location_id = f"{term_id}_location"
+    
+    # Build category path for hierarchical context
+    level = get_text(term_element, "level")
+    category_path = build_category_path(term_element, term_name)
+    
+    # Collect synonyms
+    synonyms_list = []
+    synonyms_element = term_element.find("synonyms")
+    if synonyms_element is not None:
+        for syn_el in synonyms_element.findall("synonym"):
+            synonym_text = syn_el.text.strip() if syn_el.text else None
+            if synonym_text:
+                synonyms_list.append(synonym_text)
+    
+    create_or_merge_node(
+        neo4j_connection=neo4j_connection,
+        label="BiologicalLocation",
+        primary_key="locationId",
+        properties={
+            "locationId": location_id,
+            "name": term_name,
+            "definition": definition,
+            "category": category_path,
+            "level": level,
+            "synonyms": synonyms_list,
+            "source_term_id": term_id
+        }
+    )
+
+def create_disposition_source_node(neo4j_connection: Neo4jConnection, term_id: str, term_name: str, definition: str, term_element: ET.Element):
+    """
+    Creates a specific DispositionSource node with enhanced properties.
+    """
+    source_id = f"{term_id}_source"
+    
+    # Build category path for hierarchical context
+    level = get_text(term_element, "level")
+    category_path = build_category_path(term_element, term_name)
+    
+    # Collect synonyms
+    synonyms_list = []
+    synonyms_element = term_element.find("synonyms")
+    if synonyms_element is not None:
+        for syn_el in synonyms_element.findall("synonym"):
+            synonym_text = syn_el.text.strip() if syn_el.text else None
+            if synonym_text:
+                synonyms_list.append(synonym_text)
+    
+    create_or_merge_node(
+        neo4j_connection=neo4j_connection,
+        label="DispositionSource",
+        primary_key="sourceId",
+        properties={
+            "sourceId": source_id,
+            "name": term_name,
+            "definition": definition,
+            "category": category_path,
+            "level": level,
+            "synonyms": synonyms_list,
+            "source_term_id": term_id
+        }
+    )
+
+def build_category_path(term_element: ET.Element, current_term: str):
+    """
+    Builds a hierarchical category path for better context.
+    """
+    # This is a simplified version - in a full implementation, 
+    # you might want to traverse up the hierarchy to build full paths
+    level = get_text(term_element, "level")
+    parent_id = get_text(term_element, "parent_id")
+    
+    if level and int(level) > 1:
+        return f"Level {level} > {current_term}"
+    else:
+        return current_term
+
+def parse_functional_ontology(metabolite_element: ET.Element, accession_id: str, neo4j_connection: Neo4jConnection):
+    """
+    Main function to parse functional ontology from metabolite XML.
+    Processes both health effects and disposition information.
+    """
+    ontology_root = metabolite_element.find("ontology")
+    if ontology_root is None:
+        return
+    
+    for root_term in ontology_root.findall("root"):
+        root_term_name = get_text(root_term, "term")
+        
+        if not root_term_name:
+            continue
+            
+        # Determine category based on root term name
+        if "physiological" in root_term_name.lower() or "health" in root_term_name.lower():
+            category = "health_effect"
+        elif "disposition" in root_term_name.lower():
+            # Process disposition descendants to determine subcategory
+            parse_disposition_subtree(neo4j_connection, root_term, accession_id)
+            continue
+        else:
+            category = "general"
+        
+        # Parse the term tree
+        parse_functional_ontology_term(neo4j_connection, root_term, accession_id, None, category)
+
+def parse_disposition_subtree(neo4j_connection: Neo4jConnection, disposition_root: ET.Element, metabolite_id: str):
+    """
+    Specialized parser for disposition subtree which has Source and Biological location branches.
+    """
+    descendants_element = disposition_root.find("descendants")
+    if descendants_element is not None:
+        for descendant_el in descendants_element.findall("descendant"):
+            descendant_term = get_text(descendant_el, "term")
+            
+            if "source" in descendant_term.lower():
+                parse_functional_ontology_term(neo4j_connection, descendant_el, metabolite_id, None, "source")
+            elif "biological location" in descendant_term.lower():
+                parse_functional_ontology_term(neo4j_connection, descendant_el, metabolite_id, None, "biological_location")
+            else:
+                # Generic disposition parsing
+                parse_functional_ontology_term(neo4j_connection, descendant_el, metabolite_id, None, "disposition")
+
+###########################################################################
+# EXISTING ONTOLOGY FUNCTIONS (UPDATED)
+###########################################################################
+
 def parse_ontology_subtree(neo4j_connection: Neo4jConnection, ontology_element: ET.Element, metabolite_id: str, parent_term_name: str = None):
     """
     Recursively parses an <ontology> element and creates OntologyTerm nodes.
@@ -376,12 +707,17 @@ def parse_synonyms(metabolite_element: ET.Element, accession_id: str, neo4j_conn
     """
     synonyms_root = metabolite_element.find("synonyms")
     if synonyms_root is not None:
-        # Collect all synonyms into a list
+        # Collect all synonyms into a list with source attribution when available
         synonym_list = []
+        synonym_sources = []
+        
         for syn_el in synonyms_root.findall("synonym"):
             synonym_text = syn_el.text.strip() if syn_el.text is not None and syn_el.text and syn_el.text.strip() else None
             if synonym_text:
                 synonym_list.append(synonym_text)
+                # Try to get source from attributes (this might not exist in all XML versions)
+                source = syn_el.get("source", "HMDB")  # Default to HMDB if no source
+                synonym_sources.append(source)
         
         # Only create SynonymIndex if we have synonyms
         if synonym_list:
@@ -393,7 +729,7 @@ def parse_synonyms(metabolite_element: ET.Element, accession_id: str, neo4j_conn
             name_result = neo4j_connection.run_query(metabolite_name_query, {"acc": accession_id})
             metabolite_name = name_result[0]['name'] if name_result else accession_id
             
-            # Create SynonymIndex node with synonym array
+            # Create SynonymIndex node with synonym array and sources
             synonym_index_id = f"{accession_id}_synonyms"
             create_or_merge_node(
                 neo4j_connection=neo4j_connection,
@@ -402,7 +738,8 @@ def parse_synonyms(metabolite_element: ET.Element, accession_id: str, neo4j_conn
                 properties={
                     "canonical": metabolite_name,
                     "name": metabolite_name,
-                    "synonyms": synonym_list
+                    "synonyms": synonym_list,
+                    "synonym_sources": synonym_sources  # NEW: Source attribution
                 }
             )
             
@@ -915,6 +1252,270 @@ def parse_protein_associations(metabolite_element: ET.Element, accession_id: str
                 object_key="proteinAcc"
             )
 
+###########################################################################
+# ENHANCED ENZYME PROCESSING FUNCTIONS
+###########################################################################
+
+def parse_enhanced_metabolite_protein_associations(metabolite_element: ET.Element, metabolite_id: str, neo4j_connection: Neo4jConnection):
+    """Parse protein associations from metabolite XML with enhanced details."""
+    protein_el = metabolite_element.find("protein_associations")
+    if protein_el is None:
+        return
+        
+    for prot_el in protein_el.findall("protein"):
+        protein_accession = get_text(prot_el, "protein_accession")  # This is HMDBP ID
+        protein_name = get_text(prot_el, "name")
+        uniprot_id = get_text(prot_el, "uniprot_id")
+        gene_name = get_text(prot_el, "gene_name")
+        protein_type = get_text(prot_el, "protein_type")
+        
+        if protein_accession:
+            # Create basic enhanced protein node (will be enriched by proteins XML processing)
+            create_or_merge_node(
+                neo4j_connection=neo4j_connection,
+                label="EnhancedProtein",
+                primary_key="hmdbp_id",
+                properties={
+                    "hmdbp_id": protein_accession,
+                    "protein_accession": protein_accession,
+                    "name": protein_name,
+                    "uniprot_id": uniprot_id,
+                    "gene_name": gene_name,
+                    "protein_type": protein_type
+                }
+            )
+            
+            # Create enhanced association with relationship properties
+            rel_properties = {
+                "association_type": "metabolite_enzyme",
+                "protein_name": protein_name,
+                "gene_name": gene_name,
+                "protein_type": protein_type
+            }
+            
+            create_or_merge_relationship(
+                neo4j_connection=neo4j_connection,
+                subject_node_id=metabolite_id,
+                relationship_type="HAS_ENHANCED_ASSOCIATION",
+                object_node_id=protein_accession,
+                subject_label="Metabolite",
+                object_label="EnhancedProtein",
+                subject_key="accession",
+                object_key="hmdbp_id",
+                rel_properties=rel_properties
+            )
+
+def create_enhanced_protein_node(protein_element: ET.Element, neo4j_connection: Neo4jConnection):
+    """Create an EnhancedProtein node with all available properties."""
+    # Get HMDB protein ID (primary identifier)
+    hmdbp_id = get_text(protein_element, "accession")  # This is the HMDBP ID
+    if not hmdbp_id:
+        return None
+        
+    # Basic protein information
+    name = get_text(protein_element, "name")
+    protein_type = get_text(protein_element, "protein_type")
+    gene_name = get_text(protein_element, "gene_name")
+    uniprot_id = get_text(protein_element, "uniprot_id")
+    uniprot_name = get_text(protein_element, "uniprot_name")
+    genbank_protein_id = get_text(protein_element, "genbank_protein_id")
+    genbank_gene_id = get_text(protein_element, "genbank_gene_id")
+    genecard_id = get_text(protein_element, "genecard_id")
+    
+    # Get locus from gene_properties
+    locus = None
+    gene_props_el = protein_element.find("gene_properties")
+    if gene_props_el is not None:
+        locus = get_text(gene_props_el, "locus")
+    
+    # Get protein properties
+    molecular_weight = None
+    theoretical_pi = None
+    num_residues = None
+    properties_el = protein_element.find("protein_properties")
+    if properties_el is not None:
+        molecular_weight = get_text(properties_el, "molecular_weight")
+        theoretical_pi = get_text(properties_el, "theoretical_pi")
+        num_residues = get_text(properties_el, "residue_number")
+    
+    # Get PDB IDs
+    pdb_ids = []
+    pdb_ids_el = protein_element.find("pdb_ids")
+    if pdb_ids_el is not None:
+        for pdb_el in pdb_ids_el.findall("pdb_id"):
+            if pdb_el.text:
+                pdb_ids.append(pdb_el.text.strip())
+    
+    # Create the EnhancedProtein node
+    create_or_merge_node(
+        neo4j_connection=neo4j_connection,
+        label="EnhancedProtein",
+        primary_key="hmdbp_id",
+        properties={
+            "hmdbp_id": hmdbp_id,
+            "protein_accession": hmdbp_id,  # Same as hmdbp_id
+            "name": name,
+            "protein_type": protein_type,
+            "gene_name": gene_name,
+            "uniprot_id": uniprot_id,
+            "uniprot_name": uniprot_name,
+            "genbank_protein_id": genbank_protein_id,
+            "genbank_gene_id": genbank_gene_id,
+            "genecard_id": genecard_id,
+            "locus": locus,
+            "molecular_weight": molecular_weight,
+            "theoretical_pi": theoretical_pi,
+            "num_residues": num_residues,
+            "pdb_ids": pdb_ids
+        }
+    )
+    
+    return hmdbp_id
+
+def parse_protein_function(protein_element: ET.Element, hmdbp_id: str, neo4j_connection: Neo4jConnection):
+    """Parse protein function information into ProteinFunction node."""
+    general_function = get_text(protein_element, "general_function")
+    specific_function = get_text(protein_element, "specific_function")
+    protein_type = get_text(protein_element, "protein_type")
+    
+    if general_function or specific_function:
+        function_id = f"{hmdbp_id}_function"
+        create_or_merge_node(
+            neo4j_connection=neo4j_connection,
+            label="ProteinFunction",
+            primary_key="functionId",
+            properties={
+                "functionId": function_id,
+                "general_function": general_function,
+                "specific_function": specific_function,
+                "protein_type": protein_type,
+                "hmdbp_id": hmdbp_id
+            }
+        )
+        
+        create_or_merge_relationship(
+            neo4j_connection=neo4j_connection,
+            subject_node_id=hmdbp_id,
+            relationship_type="HAS_PROTEIN_FUNCTION",
+            object_node_id=function_id,
+            subject_label="EnhancedProtein",
+            object_label="ProteinFunction",
+            subject_key="hmdbp_id",
+            object_key="functionId"
+        )
+
+def parse_protein_details(protein_element: ET.Element, hmdbp_id: str, neo4j_connection: Neo4jConnection):
+    """Parse detailed protein properties into ProteinDetail node."""
+    properties_el = protein_element.find("protein_properties")
+    if properties_el is not None:
+        molecular_weight = get_text(properties_el, "molecular_weight")
+        theoretical_pi = get_text(properties_el, "theoretical_pi")
+        residue_number = get_text(properties_el, "residue_number")
+        polypeptide_sequence = get_text(properties_el, "polypeptide_sequence")
+        
+        detail_id = f"{hmdbp_id}_details"
+        create_or_merge_node(
+            neo4j_connection=neo4j_connection,
+            label="ProteinDetail",
+            primary_key="detailId",
+            properties={
+                "detailId": detail_id,
+                "molecular_weight": molecular_weight,
+                "theoretical_pi": theoretical_pi,
+                "residue_number": residue_number,
+                "polypeptide_sequence": polypeptide_sequence,
+                "hmdbp_id": hmdbp_id
+            }
+        )
+        
+        create_or_merge_relationship(
+            neo4j_connection=neo4j_connection,
+            subject_node_id=hmdbp_id,
+            relationship_type="HAS_PROTEIN_DETAIL",
+            object_node_id=detail_id,
+            subject_label="EnhancedProtein",
+            object_label="ProteinDetail",
+            subject_key="hmdbp_id",
+            object_key="detailId"
+        )
+
+def parse_gene_location(protein_element: ET.Element, hmdbp_id: str, neo4j_connection: Neo4jConnection):
+    """Parse gene location information into GeneLocation node."""
+    gene_props_el = protein_element.find("gene_properties")
+    if gene_props_el is not None:
+        locus = get_text(gene_props_el, "locus")
+        chromosome_location = get_text(gene_props_el, "chromosome_location")
+        gene_sequence = get_text(gene_props_el, "gene_sequence")
+        
+        if locus:
+            location_id = f"{hmdbp_id}_location"
+            create_or_merge_node(
+                neo4j_connection=neo4j_connection,
+                label="GeneLocation",
+                primary_key="locationId",
+                properties={
+                    "locationId": location_id,
+                    "locus": locus,
+                    "chromosome_location": chromosome_location,
+                    "gene_sequence": gene_sequence,
+                    "hmdbp_id": hmdbp_id
+                }
+            )
+            
+            create_or_merge_relationship(
+                neo4j_connection=neo4j_connection,
+                subject_node_id=hmdbp_id,
+                relationship_type="LOCATED_AT_LOCUS",
+                object_node_id=location_id,
+                subject_label="EnhancedProtein",
+                object_label="GeneLocation",
+                subject_key="hmdbp_id",
+                object_key="locationId"
+            )
+
+def parse_protein_reactions(protein_element: ET.Element, hmdbp_id: str, neo4j_connection: Neo4jConnection):
+    """Parse protein reactions (if available in XML)."""
+    protein_type = get_text(protein_element, "protein_type")
+    name = get_text(protein_element, "name")
+    
+    if protein_type and protein_type.lower() == "enzyme":
+        reaction_id = f"{hmdbp_id}_reaction"
+        # Create a basic reaction node based on available information
+        create_or_merge_node(
+            neo4j_connection=neo4j_connection,
+            label="ProteinReaction",
+            primary_key="reactionId",
+            properties={
+                "reactionId": reaction_id,
+                "reaction_type": "enzymatic",
+                "enzyme_name": name,
+                "hmdbp_id": hmdbp_id
+            }
+        )
+        
+        create_or_merge_relationship(
+            neo4j_connection=neo4j_connection,
+            subject_node_id=hmdbp_id,
+            relationship_type="CATALYZES_REACTION",
+            object_node_id=reaction_id,
+            subject_label="EnhancedProtein",
+            object_label="ProteinReaction",
+            subject_key="hmdbp_id",
+            object_key="reactionId"
+        )
+
+def process_protein_for_enhancement(protein_element: ET.Element, neo4j_connection: Neo4jConnection):
+    """Process a single protein element for enhancement."""
+    hmdbp_id = create_enhanced_protein_node(protein_element, neo4j_connection)
+    if not hmdbp_id:
+        return
+        
+    # Parse detailed protein information
+    parse_protein_function(protein_element, hmdbp_id, neo4j_connection)
+    parse_protein_details(protein_element, hmdbp_id, neo4j_connection)
+    parse_gene_location(protein_element, hmdbp_id, neo4j_connection)
+    parse_protein_reactions(protein_element, hmdbp_id, neo4j_connection)
+
 def parse_general_references(metabolite_element: ET.Element, accession_id: str, neo4j_connection: Neo4jConnection):
     """
     Parses <general_references> for a metabolite, creating GeneralReference nodes.
@@ -1046,6 +1647,7 @@ def parse_full_metabolite(metabolite_element: ET.Element, neo4j_connection: Neo4
     parse_synonyms(metabolite_element, accession_id, neo4j_connection)
     parse_taxonomy(metabolite_element, accession_id, neo4j_connection)
     parse_ontology(metabolite_element, accession_id, neo4j_connection)
+    parse_functional_ontology(metabolite_element, accession_id, neo4j_connection)  # NEW: Functional ontology parsing
     parse_experimental_properties(metabolite_element, accession_id, neo4j_connection)
     parse_predicted_properties(metabolite_element, accession_id, neo4j_connection)
     parse_spectra(metabolite_element, accession_id, neo4j_connection)
@@ -1054,6 +1656,7 @@ def parse_full_metabolite(metabolite_element: ET.Element, neo4j_connection: Neo4
     parse_abnormal_concentrations(metabolite_element, accession_id, neo4j_connection)
     parse_diseases(metabolite_element, accession_id, neo4j_connection)
     parse_protein_associations(metabolite_element, accession_id, neo4j_connection)
+    parse_enhanced_metabolite_protein_associations(metabolite_element, accession_id, neo4j_connection)  # NEW: Enhanced enzyme associations
     parse_general_references(metabolite_element, accession_id, neo4j_connection)
     parse_cross_references(metabolite_element, accession_id, neo4j_connection)
     parse_synthesis_reference(metabolite_element, accession_id, neo4j_connection)
@@ -1573,6 +2176,9 @@ def parse_full_protein(protein_element: ET.Element, neo4j_connection: Neo4jConne
     parse_go_classifications(protein_element, protein_accession, neo4j_connection)
     parse_subcellular_locations(protein_element, protein_accession, neo4j_connection)
     parse_pdb_ids(protein_element, protein_accession, neo4j_connection)
+    
+    # NEW: Enhanced protein processing
+    process_protein_for_enhancement(protein_element, neo4j_connection)
 
 def build_knowledge_graph_from_hmdb_proteins(neo4j_connection: Neo4jConnection, proteins_xml_file: str) -> str:
     """

@@ -231,6 +231,184 @@ class LangChainPipeline:
             chain = chain | StrOutputParser()
             
         return chain
+    
+    async def _handle_spectrum_comparison(self, spectra_result: Dict[str, Any]) -> AsyncGenerator[str, None]:
+        """
+        Handle spectrum comparison queries with multiple metabolites
+        
+        Args:
+            spectra_result: Comparison result with multiple spectra data
+            
+        Yields:
+            Formatted SSE messages for comparison analysis
+        """
+        from backend.services.spectra_service import SpectraProcessor
+        
+        yield self._format_message("Thinking", "Processing spectrum comparison data...")
+        
+        comparison_type = spectra_result.get("comparison_type", "compare")
+        hmdb_ids = spectra_result.get("hmdb_ids", [])
+        spectra_data_list = spectra_result.get("spectra_data", [])
+        resolution_info = spectra_result.get("resolution_info", [])
+        
+        if not spectra_data_list or len(spectra_data_list) < 2:
+            yield self._format_message("Answer", "❌ Insufficient spectrum data for comparison. At least 2 metabolites are required.")
+            yield self._format_message("DONE", "")
+            return
+        
+        # Process each metabolite's spectrum data
+        all_processed_spectra = []
+        metabolite_summaries = {}
+        
+        for metabolite_data in spectra_data_list:
+            hmdb_id = metabolite_data.get("hmdb_id")
+            raw_spectra_data = metabolite_data.get("spectra_data", {})
+            
+            if not hmdb_id or not raw_spectra_data:
+                continue
+            
+            metabolite_summaries[hmdb_id] = {
+                "hmdb_id": hmdb_id,
+                "spectrum_types": [],
+                "total_spectra": 0,
+                "processed_spectra": []
+            }
+            
+            # Process each spectrum type for this metabolite
+            for spectrum_type in ['c_ms', 'ms_ms', 'nmr', 'ms_ir']:
+                if spectrum_type in raw_spectra_data and raw_spectra_data[spectrum_type]:
+                    for spectrum_raw in raw_spectra_data[spectrum_type]:
+                        try:
+                            processed = SpectraProcessor.process_spectrum_data(
+                                hmdb_id=hmdb_id,
+                                raw_data=spectrum_raw,
+                                spectrum_type_key=spectrum_type
+                            )
+                            if processed:
+                                all_processed_spectra.append(processed)
+                                metabolite_summaries[hmdb_id]["processed_spectra"].append(processed)
+                                if spectrum_type not in metabolite_summaries[hmdb_id]["spectrum_types"]:
+                                    metabolite_summaries[hmdb_id]["spectrum_types"].append(spectrum_type)
+                                metabolite_summaries[hmdb_id]["total_spectra"] += 1
+                        except Exception as e:
+                            print(f"[ERROR] Failed to process {spectrum_type} spectrum for {hmdb_id}: {str(e)}")
+        
+        if not all_processed_spectra:
+            yield self._format_message("Answer", "❌ No valid spectrum data could be processed for comparison.")
+            yield self._format_message("DONE", "")
+            return
+        
+        # Format for LLM comparison analysis
+        try:
+            comparison_data = SpectraProcessor.format_multiple_spectra_for_llm_comparison(
+                all_processed_spectra, comparison_type
+            )
+        except Exception as e:
+            print(f"[ERROR] Failed to format comparison data: {str(e)}")
+            yield self._format_message("Answer", f"❌ Error formatting comparison data: {str(e)}")
+            yield self._format_message("DONE", "")
+            return
+        
+        # Build comparison response
+        response = f"# 🔬 Spectrum Comparison Analysis\n\n"
+        response += f"**Comparison Type:** {comparison_type.title()}\n"
+        response += f"**Metabolites:** {len(metabolite_summaries)}\n"
+        response += f"**Total Spectra:** {len(all_processed_spectra)}\n\n"
+        
+        # Add resolution information if available
+        if resolution_info:
+            response += "## 🎯 Metabolite Resolution\n\n"
+            for info in resolution_info:
+                response += f"- **{info['query_name']}** → **{info['resolved_name']}** ({info['hmdb_id']}) "
+                response += f"*[Confidence: {info['confidence']:.2f}]*\n"
+            response += "\n"
+        
+        # Add individual metabolite summaries
+        response += "## 📊 Individual Metabolite Spectra\n\n"
+        for hmdb_id, summary in metabolite_summaries.items():
+            response += f"### {hmdb_id}\n"
+            response += f"- **Spectrum Types Available:** {', '.join(summary['spectrum_types'])}\n"
+            response += f"- **Total Spectra:** {summary['total_spectra']}\n"
+            
+            # Add spectrum URLs if available
+            urls_found = []
+            for processed_spectrum in summary["processed_spectra"]:
+                if processed_spectrum.metadata.spectrum_url:
+                    spectrum_type = processed_spectrum.metadata.spectrum_type.value
+                    urls_found.append(f"[{spectrum_type}]({processed_spectrum.metadata.spectrum_url})")
+            
+            if urls_found:
+                response += f"- **Interactive Spectra:** {', '.join(urls_found)}\n"
+            
+            response += "\n"
+        
+        # Add comparison insights
+        insights = comparison_data.get("comparison_insights", [])
+        if insights:
+            response += "## 🔍 Comparison Insights\n\n"
+            for insight in insights:
+                response += f"- {insight}\n"
+            response += "\n"
+        
+        # Add analysis suggestions
+        suggestions = comparison_data.get("analysis_suggestions", [])
+        if suggestions:
+            response += "## 💡 Analysis Suggestions\n\n"
+            for suggestion in suggestions:
+                response += f"- {suggestion}\n"
+            response += "\n"
+        
+        # Generate LLM analysis using the comparison data
+        yield self._format_message("Thinking", "Generating detailed comparison analysis...")
+        
+        try:
+            comparison_prompt = f"""You are analyzing spectrum comparison data for multiple metabolites.
+
+Comparison Type: {comparison_type}
+Number of Metabolites: {len(metabolite_summaries)}
+
+Detailed Comparison Data:
+{json.dumps(comparison_data, indent=2, default=str)}
+
+Please provide:
+1. **Key Differences**: Highlight the most important spectral differences between the metabolites
+2. **Chemical Insights**: What do these differences tell us about the molecular structures?
+3. **Peak Analysis**: Compare significant peaks and their intensities
+4. **Structural Implications**: How do the spectral patterns relate to molecular structure differences?
+
+Focus on practical insights that would be valuable for metabolomics research."""
+            
+            from langchain_core.prompts import PromptTemplate
+            
+            llm_chain = self._create_chain(
+                {"comparison_data": lambda x: x["comparison_data"]},
+                PromptTemplate.from_template(comparison_prompt),
+                model_type="query"
+            )
+            
+            llm_analysis = ""
+            async for chunk in llm_chain.astream({
+                "comparison_data": json.dumps(comparison_data, indent=2, default=str)
+            }):
+                llm_analysis += chunk
+            
+            if llm_analysis.strip():
+                response += "## 🧠 AI Analysis\n\n"
+                response += llm_analysis
+                response += "\n"
+        
+        except Exception as e:
+            print(f"[ERROR] LLM analysis failed: {str(e)}")
+            response += "## ⚠️ Analysis Note\n\n"
+            response += "Detailed AI analysis could not be generated, but the comparison data above provides comprehensive insights.\n\n"
+        
+        # Add final summary
+        response += "---\n\n"
+        response += f"**Summary:** Successfully compared {len(metabolite_summaries)} metabolites across {len(all_processed_spectra)} spectra. "
+        response += f"Use the interactive spectrum links above for detailed visualization.\n"
+        
+        yield self._format_message("Answer", response)
+        yield self._format_message("DONE", "")
 
     def _format_message(self, section: str, text: str) -> str:
         message = {"section": section, "text": text}
@@ -1150,7 +1328,7 @@ class LangChainPipeline:
             # Return the combined text without post-processing if no neo4j_results
             return combined_text
 
-    async def run_pipeline(self, user_question: str, conversation_history: List = None, relevant_history: List = None) -> AsyncGenerator[str, None]:
+    async def run_pipeline(self, user_question: str, conversation_history: List = None, relevant_history: List = None, spectrum_mode: bool = False) -> AsyncGenerator[str, None]:
         try:
             # IMPORTANT: Follow the pattern of separating text accumulation from post-processing.
             # 1. Accumulate raw text without hyperlink injection
@@ -1221,7 +1399,14 @@ class LangChainPipeline:
                 print(f"\n[DEBUG] Single intent detected: {intents[0].intent_type}")
             
             # PHASE 4: Check for spectra-related queries and handle them early
-            spectra_result = self.spectra_integrator.process_spectra_query(user_question)
+            # When spectrum_mode is True, force spectrum detection for any query
+            if spectrum_mode:
+                print(f"\n[DEBUG] Spectrum Mode enabled - forcing spectrum analysis")
+                yield self._format_message("Thinking", "🔬 Spectrum Mode enabled - analyzing query for spectrum data...")
+                spectra_result = self.spectra_integrator.process_spectra_query(f"spectrum of {user_question}")
+            else:
+                spectra_result = self.spectra_integrator.process_spectra_query(user_question)
+            
             if spectra_result.get("is_spectra_query", False):
                 print(f"\n[DEBUG] Spectra query detected!")
                 print(f"[DEBUG] Spectra result structure: {json.dumps(spectra_result, indent=2, default=str)}")
@@ -1231,6 +1416,13 @@ class LangChainPipeline:
                 print(f"[DEBUG] Processing spectra_result directly")
                 
                 if spectra_result.get("success", False):
+                    # Check if this is a comparison query
+                    if spectra_result.get("is_comparison", False):
+                        async for message in self._handle_spectrum_comparison(spectra_result):
+                            yield message
+                        return
+                    
+                    # Handle single spectrum query
                     # We have successful spectra data - extract from nested spectra_data structure
                     spectra_data_container = spectra_result.get("spectra_data", {})
                     all_spectra = spectra_data_container.get("data", [])
@@ -1299,6 +1491,15 @@ class LangChainPipeline:
                                     response += f"**Quality Score:** {processed_spectrum.quality_score:.2f}\n"
                                     response += f"**Number of Peaks:** {len(processed_spectrum.peaks)}\n"
                                     
+                                    # Check for spectrum URL first - prioritize direct links over visualization
+                                    spectrum_url = processed_spectrum.metadata.spectrum_url
+                                    if spectrum_url:
+                                        response += f"🔗 **[View Interactive Spectrum on HMDB]({spectrum_url})**\n\n"
+                                        response += "📊 *This links directly to HMDB's professional spectrum visualization*\n"
+                                        print(f"[DEBUG] Found spectrum URL for {hmdb_id}: {spectrum_url}")
+                                    else:
+                                        response += "📊 *Spectrum URL not available - using processed data*\n"
+                                    
                                     # Add experimental conditions if available
                                     if processed_spectrum.metadata.solvent:
                                         response += f"**Solvent:** {processed_spectrum.metadata.solvent}\n"
@@ -1320,30 +1521,33 @@ class LangChainPipeline:
                                     except Exception as llm_error:
                                         print(f"[ERROR] LLM formatting failed for spectrum {spectrum_idx}: {llm_error}")
                                     
-                                    # Generate visualization
-                                    try:
-                                        visualization_result = self.spectra_visualization.create_spectrum_visualization(
-                                            processed_spectrum,
-                                            output_format=PlotFormat.INTERACTIVE_HTML,
-                                            style=PlotStyle.SCIENTIFIC
-                                        )
-                                        
-                                        if visualization_result.get("success", False):
-                                            # Save visualization file
-                                            viz_filename = f"spectrum_plot_{hmdb_id}_{spectrum_category}_{spectrum_idx}.html"
-                                            viz_file = os.path.join(debug_dir, viz_filename)
+                                    # Generate visualization only if spectrum URL is not available
+                                    if not spectrum_url:
+                                        try:
+                                            visualization_result = self.spectra_visualization.create_spectrum_visualization(
+                                                processed_spectrum,
+                                                output_format=PlotFormat.INTERACTIVE_HTML,
+                                                style=PlotStyle.SCIENTIFIC
+                                            )
                                             
-                                            graph_data = visualization_result.get("graph_data", {})
-                                            if graph_data.get("content"):
-                                                with open(viz_file, 'w') as f:
-                                                    f.write(graph_data["content"])
-                                                visualization_files.append(viz_filename)
-                                                print(f"[DEBUG] Saved spectrum plot to: {viz_file}")
-                                                response += f"📊 **Visualization:** `{viz_filename}`\n"
-                                        
-                                    except Exception as viz_error:
-                                        print(f"[ERROR] Visualization failed for spectrum {spectrum_idx}: {viz_error}")
-                                        response += f"⚠️ **Visualization failed:** {viz_error}\n"
+                                            if visualization_result.get("success", False):
+                                                # Save visualization file
+                                                viz_filename = f"spectrum_plot_{hmdb_id}_{spectrum_category}_{spectrum_idx}.html"
+                                                viz_file = os.path.join(debug_dir, viz_filename)
+                                                
+                                                graph_data = visualization_result.get("graph_data", {})
+                                                if graph_data.get("content"):
+                                                    with open(viz_file, 'w') as f:
+                                                        f.write(graph_data["content"])
+                                                    visualization_files.append(viz_filename)
+                                                    print(f"[DEBUG] Saved spectrum plot to: {viz_file}")
+                                                    response += f"📊 **Local Visualization:** `{viz_filename}`\n"
+                                            
+                                        except Exception as viz_error:
+                                            print(f"[ERROR] Visualization failed for spectrum {spectrum_idx}: {viz_error}")
+                                            response += f"⚠️ **Visualization failed:** {viz_error}\n"
+                                    else:
+                                        print(f"[DEBUG] Skipping local visualization - using HMDB spectrum URL instead")
                                     
                                     response += "\n---\n\n"
                                 
@@ -1387,9 +1591,19 @@ class LangChainPipeline:
                 else:
                     # Error in spectra processing
                     error_msg = spectra_result.get("error", "Unknown error in spectrum processing")
+                    error_type = spectra_result.get("error_type")
+                    
                     print(f"[ERROR] Spectra processing error: {error_msg}")
+                    print(f"[ERROR] Error type: {error_type}")
                     print(f"[ERROR] Full result structure: {json.dumps(spectra_result, indent=2, default=str)}")
-                    yield self._format_message("Answer", f"Sorry, I encountered an issue while processing your spectrum request: {error_msg}")
+                    
+                    # For timeout/connection errors, show user-friendly message without "Sorry, I encountered an issue"
+                    if error_type in ["timeout", "connection", "request"]:
+                        yield self._format_message("Answer", error_msg)
+                    else:
+                        # For other errors, keep the apologetic tone
+                        yield self._format_message("Answer", f"Sorry, I encountered an issue while processing your spectrum request: {error_msg}")
+                    
                     yield self._format_message("DONE", "")
                     return
             

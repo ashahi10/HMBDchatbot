@@ -69,6 +69,7 @@ class SpectrumMetadata:
         temperature: Acquisition temperature
         ph: Sample pH
         splash_key: SPLASH spectrum identifier
+        spectrum_url: Direct URL to spectrum on HMDB website
         acquisition_date: When spectrum was acquired
         notes: Additional notes
     """
@@ -80,6 +81,7 @@ class SpectrumMetadata:
     temperature: Optional[str] = None
     ph: Optional[float] = None
     splash_key: Optional[str] = None
+    spectrum_url: Optional[str] = None  # NEW: Direct URL to spectrum on HMDB website
     acquisition_date: Optional[datetime] = None
     notes: Optional[str] = None
 
@@ -320,6 +322,7 @@ class SpectraProcessor:
                 temperature=raw_data.get('sample_temperature'),
                 ph=raw_data.get('sample_ph'),
                 splash_key=raw_data.get('splash_key'),
+                spectrum_url=raw_data.get('spectrum_url'),  # Include spectrum URL
                 notes=raw_data.get('notes')
             )
             
@@ -440,3 +443,155 @@ class SpectraProcessor:
             hints.append("Limited quality spectrum - use with caution for identification")
         
         return hints
+    
+    @staticmethod
+    def format_multiple_spectra_for_llm_comparison(spectra_list: List[ProcessedSpectrum], comparison_type: str = "compare") -> Dict[str, Any]:
+        """
+        Format multiple processed spectra for LLM comparison analysis
+        
+        Args:
+            spectra_list: List of ProcessedSpectrum objects
+            comparison_type: Type of comparison ("compare", "difference", "versus")
+            
+        Returns:
+            Dictionary formatted for LLM consumption with comparison structure
+        """
+        if len(spectra_list) < 2:
+            raise ValueError("At least 2 spectra required for comparison")
+        
+        # Group spectra by HMDB ID and type for organized comparison
+        spectra_by_metabolite = {}
+        
+        for spectrum in spectra_list:
+            hmdb_id = spectrum.hmdb_id
+            if hmdb_id not in spectra_by_metabolite:
+                spectra_by_metabolite[hmdb_id] = {
+                    'hmdb_id': hmdb_id,
+                    'spectra_types': {},
+                    'overall_quality': 0,
+                    'spectrum_count': 0
+                }
+            
+            spectrum_type = spectrum.metadata.spectrum_type.value
+            if spectrum_type not in spectra_by_metabolite[hmdb_id]['spectra_types']:
+                spectra_by_metabolite[hmdb_id]['spectra_types'][spectrum_type] = []
+            
+            # Format individual spectrum for comparison
+            formatted_spectrum = {
+                'instrument': spectrum.metadata.instrument_type.value,
+                'quality_score': spectrum.quality_score,
+                'total_peaks': len(spectrum.peaks),
+                'top_peaks': [
+                    {
+                        'mz': peak.mass_charge,
+                        'intensity': round(peak.intensity, 4),
+                        'annotation': peak.annotation
+                    }
+                    for peak in sorted(spectrum.peaks, key=lambda x: x.intensity, reverse=True)[:5]
+                ],
+                'experimental_conditions': {
+                    'solvent': spectrum.metadata.solvent,
+                    'concentration': spectrum.metadata.sample_concentration,
+                    'temperature': spectrum.metadata.temperature,
+                    'ph': spectrum.metadata.ph
+                },
+                'spectrum_url': spectrum.metadata.spectrum_url
+            }
+            
+            spectra_by_metabolite[hmdb_id]['spectra_types'][spectrum_type].append(formatted_spectrum)
+            spectra_by_metabolite[hmdb_id]['overall_quality'] += spectrum.quality_score
+            spectra_by_metabolite[hmdb_id]['spectrum_count'] += 1
+        
+        # Calculate average quality scores
+        for metabolite_data in spectra_by_metabolite.values():
+            if metabolite_data['spectrum_count'] > 0:
+                metabolite_data['overall_quality'] = metabolite_data['overall_quality'] / metabolite_data['spectrum_count']
+        
+        # Generate comparison insights
+        comparison_insights = SpectraProcessor._generate_comparison_insights(
+            list(spectra_by_metabolite.values()), comparison_type
+        )
+        
+        return {
+            'comparison_type': comparison_type,
+            'metabolite_count': len(spectra_by_metabolite),
+            'total_spectra': len(spectra_list),
+            'metabolites': spectra_by_metabolite,
+            'comparison_insights': comparison_insights,
+            'analysis_suggestions': SpectraProcessor._generate_analysis_suggestions(comparison_type)
+        }
+    
+    @staticmethod
+    def _generate_comparison_insights(metabolite_data: List[Dict], comparison_type: str) -> List[str]:
+        """
+        Generate insights for spectrum comparison
+        
+        Args:
+            metabolite_data: List of metabolite spectrum data
+            comparison_type: Type of comparison
+            
+        Returns:
+            List of comparison insights
+        """
+        insights = []
+        
+        if len(metabolite_data) >= 2:
+            # Quality comparison
+            qualities = [m['overall_quality'] for m in metabolite_data]
+            max_quality = max(qualities)
+            min_quality = min(qualities)
+            
+            if max_quality - min_quality > 0.3:
+                insights.append(f"Significant quality difference: highest {max_quality:.2f}, lowest {min_quality:.2f}")
+            
+            # Spectrum type availability
+            all_types = set()
+            for metabolite in metabolite_data:
+                all_types.update(metabolite['spectra_types'].keys())
+            
+            common_types = all_types.copy()
+            for metabolite in metabolite_data:
+                common_types.intersection_update(metabolite['spectra_types'].keys())
+            
+            if common_types:
+                insights.append(f"Common spectrum types available: {', '.join(common_types)}")
+            
+            if comparison_type == "difference":
+                insights.append("Focus on peak differences and chemical shift variations")
+            elif comparison_type == "versus":
+                insights.append("Direct comparison of spectral features and intensities")
+            else:
+                insights.append("Comprehensive comparison of spectral characteristics")
+        
+        return insights
+    
+    @staticmethod
+    def _generate_analysis_suggestions(comparison_type: str) -> List[str]:
+        """
+        Generate analysis suggestions based on comparison type
+        
+        Args:
+            comparison_type: Type of comparison
+            
+        Returns:
+            List of analysis suggestions
+        """
+        base_suggestions = [
+            "Compare molecular fragmentation patterns in MS spectra",
+            "Analyze chemical shift differences in NMR data",
+            "Look for unique peaks that distinguish the metabolites",
+            "Consider experimental conditions when interpreting differences"
+        ]
+        
+        if comparison_type == "difference":
+            base_suggestions.extend([
+                "Calculate mass differences for structural insights",
+                "Identify functional group variations from spectral signatures"
+            ])
+        elif comparison_type == "versus":
+            base_suggestions.extend([
+                "Rank metabolites by spectral complexity",
+                "Compare peak intensity ratios for quantitative insights"
+            ])
+        
+        return base_suggestions

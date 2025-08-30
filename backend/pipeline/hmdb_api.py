@@ -213,9 +213,11 @@ class HMDBApiClient:
             self._cache_manager = CacheManager()
 
     def _build_url(self, endpoint: str) -> str:
-        return f"{self.base_url}/{endpoint}/?api-key={self.api_key}"
+        # Remove '/api/hmdb' from base_url if present to avoid duplication
+        server_url = self.base_url.replace('/api/hmdb', '')
+        return f"{server_url}/api/hmdb/{endpoint}?api-key={self.api_key}"
 
-    def get(self, endpoint: str) -> Optional[Dict[str, Any]]:
+    def get(self, endpoint: str, timeout: int = 30) -> Optional[Dict[str, Any]]:
         # Check cache first if enabled
         if self._use_cache:
             cached_response = self._cache_manager.get_cached_api_response(endpoint, {})
@@ -230,7 +232,7 @@ class HMDBApiClient:
 
         url = self._build_url(endpoint)
         try:
-            response = requests.get(url, headers=self.headers)
+            response = requests.get(url, headers=self.headers, timeout=timeout)
             response.raise_for_status()
             self.rate_limiter.record_get_request()
             
@@ -239,9 +241,15 @@ class HMDBApiClient:
                 self._cache_manager.cache_api_response(endpoint, {}, response.json())
             
             return response.json()
+        except requests.exceptions.Timeout as e:
+            print(f"GET request timed out after {timeout}s: {e}")
+            return {"timeout_error": True, "message": "HMDB server is busy. Please try again in some time."}
+        except requests.exceptions.ConnectionError as e:
+            print(f"GET request connection failed: {e}")
+            return {"connection_error": True, "message": "Unable to connect to HMDB server. Please try again later."}
         except requests.RequestException as e:
             print(f"GET request failed: {e}")
-            return None
+            return {"request_error": True, "message": "HMDB server error. Please try again in some time."}
      
     def post(self, endpoint: str, payload: dict) -> Optional[Dict[str, Any]]:
         # Check cache first if enabled
@@ -255,7 +263,9 @@ class HMDBApiClient:
         if not self.rate_limiter.can_make_get_request():
             return None
 
-        url = f"{self.base_url}/{endpoint}/?api-key={self.api_key}"
+        # Remove '/api/hmdb' from base_url if present to avoid duplication  
+        server_url = self.base_url.replace('/api/hmdb', '')
+        url = f"{server_url}/api/hmdb/{endpoint}?api-key={self.api_key}"
         try:
             response = requests.post(url, json=payload, headers=self.headers)
             response.raise_for_status()
@@ -266,9 +276,15 @@ class HMDBApiClient:
                 self._cache_manager.cache_api_response(endpoint, payload, response.json())
                 
             return response.json()
+        except requests.exceptions.Timeout as e:
+            print(f"POST request timed out: {e}")
+            return {"timeout_error": True, "message": "HMDB server is busy. Please try again in some time."}
+        except requests.exceptions.ConnectionError as e:
+            print(f"POST request connection failed: {e}")
+            return {"connection_error": True, "message": "Unable to connect to HMDB server. Please try again later."}
         except requests.RequestException as e:
             print(f"POST request failed: {e}")
-            return None
+            return {"request_error": True, "message": "HMDB server error. Please try again in some time."}
             
     def select_endpoints_for_fields(self, required_fields: list) -> list:
         """
@@ -740,9 +756,37 @@ class HMDBApiClient:
         """
         endpoint = f"metabolites/{hmdb_id}/spectra"
         
-        # Use GET request for spectra retrieval
-        response = self.get(endpoint)
+        # Use GET request for spectra retrieval with extended timeout for spectra
+        response = self.get(endpoint, timeout=60)  # Longer timeout for spectra endpoint
         
+        # Handle timeout and connection errors FIRST
+        if isinstance(response, dict):
+            if response.get("timeout_error"):
+                return {
+                    "success": False,
+                    "data": None,
+                    "metadata": {"hmdb_id": hmdb_id, "endpoint": endpoint},
+                    "errors": [response.get("message", "HMDB server is busy. Please try again in some time.")],
+                    "error_type": "timeout"
+                }
+            elif response.get("connection_error"):
+                return {
+                    "success": False,
+                    "data": None,
+                    "metadata": {"hmdb_id": hmdb_id, "endpoint": endpoint},
+                    "errors": [response.get("message", "Unable to connect to HMDB server. Please try again later.")],
+                    "error_type": "connection"
+                }
+            elif response.get("request_error"):
+                return {
+                    "success": False,
+                    "data": None,
+                    "metadata": {"hmdb_id": hmdb_id, "endpoint": endpoint},
+                    "errors": [response.get("message", "HMDB server error. Please try again in some time.")],
+                    "error_type": "request"
+                }
+        
+        # Handle None response (shouldn't happen now, but keeping as fallback)
         if response is None:
             return {
                 "success": False,
@@ -917,7 +961,8 @@ class HMDBApiClient:
             "chemical_shift_reference": spectrum_data.get('chemical_shift_reference', None),
             "nucleus": spectrum_data.get('nucleus', None),
             "frequency": spectrum_data.get('frequency', None),
-            "splash_key": spectrum_data.get('splash_key', None)
+            "splash_key": spectrum_data.get('splash_key', None),
+            "spectrum_url": spectrum_data.get('spectrum_url', None)  # NEW: Extract spectrum URL
         }
         
         # Prepare successful response
@@ -1004,14 +1049,10 @@ class HMDBApiClient:
         
         # Make the API call with logging
         print(f"[SPECTRA] Fetching spectra data for: {hmdb_id}")
-        response = self.get(endpoint)
+        response = self.get(endpoint, timeout=60)
         
-        # FALLBACK: If no real data available or cached empty response, generate mock data for testing
-        test_hmdb_ids = ["HMDB0000122", "HMDB0000001", "HMDB0000927", "HMDB0002658", "HMDB0006026"]
-        if ((not response or response == {}) and hmdb_id in test_hmdb_ids) or \
-           (isinstance(response, list) and len(response) == 0 and hmdb_id in test_hmdb_ids):
-            print(f"[SPECTRA] No real data available or empty cached response, generating mock spectra for testing: {hmdb_id}")
-            response = self._generate_mock_spectra_data(hmdb_id)
+        # No mock data - use real API responses only
+        # If the API doesn't return data, we'll handle it as a proper error
         
         # Handle null or empty response
         if not response:
@@ -1019,7 +1060,7 @@ class HMDBApiClient:
                 "success": False,
                 "data": None,
                 "metadata": {"hmdb_id": hmdb_id, "endpoint": endpoint},
-                "errors": [f"No spectra data found for {hmdb_id}"]
+                "errors": ["HMDB spectrum service is currently slow or unavailable. Please try again later."]
             }
         
         # Validate response structure
@@ -1145,7 +1186,8 @@ class HMDBApiClient:
             "chemical_shift_reference": spectrum_data.get('chemical_shift_reference', None),
             "nucleus": spectrum_data.get('nucleus', None),
             "frequency": spectrum_data.get('frequency', None),
-            "splash_key": spectrum_data.get('splash_key', None)
+            "splash_key": spectrum_data.get('splash_key', None),
+            "spectrum_url": spectrum_data.get('spectrum_url', None)  # Extract spectrum URL
         }
         
         # Prepare successful response
@@ -1185,796 +1227,6 @@ class HMDBApiClient:
             "errors": validation_errors if validation_errors else None
         }
     
-    def _generate_mock_spectra_data(self, hmdb_id: str) -> Dict[str, Any]:
-        """
-        Generate mock spectra data for testing purposes based on real HMDB compounds
-        
-        Args:
-            hmdb_id: HMDB identifier
-            
-        Returns:
-            Mock spectrum data dictionary
-        """
-        if hmdb_id == "HMDB0000927":  # Valerylglycine - real compound with spectra
-            return {
-                "spectrum_type": "Experimental MS",
-                "instrument_type": "LC-ESI-QTOF",
-                "chromatography_type": "Liquid Chromatography",
-                "sample_concentration": "1 mg/mL",
-                "solvent": "Water/Methanol",
-                "sample_temperature": "25°C",
-                "peaks": [
-                    {"mass_charge": 160.1, "intensity": 100.0, "annotation": "Molecular ion [M+H]+"},
-                    {"mass_charge": 114.1, "intensity": 95.2, "annotation": "Loss of COOH"},
-                    {"mass_charge": 86.1, "intensity": 78.5, "annotation": "Valeryl fragment"},
-                    {"mass_charge": 76.0, "intensity": 65.3, "annotation": "Glycine fragment"},
-                    {"mass_charge": 142.1, "intensity": 45.7, "annotation": "Loss of H2O"},
-                    {"mass_charge": 71.0, "intensity": 35.2, "annotation": "C4H7O+"},
-                    {"mass_charge": 57.0, "intensity": 28.9, "annotation": "C4H9+"},
-                    {"mass_charge": 43.0, "intensity": 22.1, "annotation": "C3H7+"}
-                ]
-            }
-        elif hmdb_id == "HMDB0002658":  # 6-Hydroxynicotinic acid - real compound with spectra
-            return {
-                "spectrum_type": "Experimental MS",
-                "instrument_type": "LC-ESI-QQQ",
-                "chromatography_type": "Liquid Chromatography",
-                "sample_concentration": "0.5 mg/mL",
-                "solvent": "Water/Acetonitrile",
-                "sample_temperature": "20°C",
-                "peaks": [
-                    {"mass_charge": 140.0, "intensity": 100.0, "annotation": "Molecular ion [M+H]+"},
-                    {"mass_charge": 122.0, "intensity": 85.4, "annotation": "Loss of H2O"},
-                    {"mass_charge": 96.0, "intensity": 67.8, "annotation": "Loss of COOH"},
-                    {"mass_charge": 94.0, "intensity": 45.2, "annotation": "Pyridine ring"},
-                    {"mass_charge": 78.0, "intensity": 32.6, "annotation": "Loss of OH"},
-                    {"mass_charge": 68.0, "intensity": 25.1, "annotation": None},
-                    {"mass_charge": 51.0, "intensity": 18.3, "annotation": None}
-                ]
-            }
-        elif hmdb_id == "HMDB0006026":  # Norbolethone - real compound with spectra
-            return {
-                "spectrum_type": "Experimental GC-MS",
-                "instrument_type": "GC-MS",
-                "chromatography_type": "Gas Chromatography",
-                "sample_concentration": "2 mg/mL",
-                "solvent": "Hexane",
-                "sample_temperature": "25°C",
-                "peaks": [
-                    {"mass_charge": 302.0, "intensity": 100.0, "annotation": "Molecular ion"},
-                    {"mass_charge": 284.0, "intensity": 78.9, "annotation": "Loss of H2O"},
-                    {"mass_charge": 269.0, "intensity": 65.4, "annotation": "Loss of OH+CH2"},
-                    {"mass_charge": 241.0, "intensity": 54.2, "annotation": "Ring fragment"},
-                    {"mass_charge": 213.0, "intensity": 43.7, "annotation": None},
-                    {"mass_charge": 185.0, "intensity": 35.8, "annotation": None},
-                    {"mass_charge": 147.0, "intensity": 28.6, "annotation": None},
-                    {"mass_charge": 119.0, "intensity": 22.3, "annotation": None},
-                    {"mass_charge": 91.0, "intensity": 18.7, "annotation": "Tropylium ion"},
-                    {"mass_charge": 77.0, "intensity": 15.2, "annotation": "Phenyl fragment"}
-                ]
-            }
-        elif hmdb_id == "HMDB0000122":  # D-Glucose
-            return {
-                "spectrum_type": "Experimental GC-MS",
-                "instrument_type": "GC-MS",
-                "chromatography_type": "Gas Chromatography",
-                "sample_concentration": "1 mg/mL",
-                "solvent": "Methanol",
-                "sample_temperature": "25°C",
-                "peaks": [
-                    {"mass_charge": 73.0, "intensity": 100.0, "annotation": "Base peak"},
-                    {"mass_charge": 147.0, "intensity": 85.2, "annotation": "Molecular ion fragment"},
-                    {"mass_charge": 103.0, "intensity": 45.7, "annotation": None},
-                    {"mass_charge": 117.0, "intensity": 32.1, "annotation": None},
-                    {"mass_charge": 129.0, "intensity": 28.9, "annotation": None},
-                    {"mass_charge": 160.0, "intensity": 15.3, "annotation": None},
-                    {"mass_charge": 89.0, "intensity": 12.8, "annotation": None},
-                    {"mass_charge": 191.0, "intensity": 8.4, "annotation": None},
-                    {"mass_charge": 205.0, "intensity": 5.2, "annotation": None},
-                    {"mass_charge": 217.0, "intensity": 3.1, "annotation": None}
-                ]
-            }
-        elif hmdb_id == "HMDB0000001":  # 1-Methylhistidine
-            return {
-                "spectrum_type": "Experimental LC-MS",
-                "instrument_type": "LC-MS",
-                "chromatography_type": "Liquid Chromatography",
-                "sample_concentration": "0.5 mg/mL",
-                "solvent": "Water/Acetonitrile",
-                "sample_temperature": "20°C",
-                "peaks": [
-                    {"mass_charge": 170.0, "intensity": 100.0, "annotation": "Molecular ion [M+H]+"},
-                    {"mass_charge": 124.0, "intensity": 78.3, "annotation": "Loss of COOH"},
-                    {"mass_charge": 153.0, "intensity": 45.6, "annotation": "Loss of NH3"},
-                    {"mass_charge": 109.0, "intensity": 32.8, "annotation": None},
-                    {"mass_charge": 95.0, "intensity": 25.4, "annotation": None},
-                    {"mass_charge": 81.0, "intensity": 18.9, "annotation": None}
-                ]
-            }
-        else:
-            # Generic mock data
-            return {
-                "spectrum_type": "Experimental MS",
-                "instrument_type": "MS",
-                "peaks": [
-                    {"mass_charge": 100.0, "intensity": 100.0, "annotation": "Test peak"},
-                    {"mass_charge": 150.0, "intensity": 50.0, "annotation": None},
-                    {"mass_charge": 200.0, "intensity": 25.0, "annotation": None}
-                ]
-            }
-
-    def _normalize_field_value(self, field_name: str, field_value: Any) -> Any:
-        """
-        Normalize field values to handle inconsistent API responses.
-        
-        Args:
-            field_name: The name of the field
-            field_value: The value to normalize
-            
-        Returns:
-            Normalized value that's consistent across API calls
-        """
-        # If the field is None, return an empty value based on field type expectations
-        if field_value is None:
-            if field_name in ["synonyms", "ions"]:
-                return []
-            elif field_name in ["description", "name"]:
-                return ""
-            return None
-            
-        # Handle text fields that come as lists (especially descriptions)
-        if field_name in ["description"] and isinstance(field_value, list):
-            # Join all list items into a single string, handling potential nested structures
-            if field_value and isinstance(field_value[0], dict) and "text" in field_value[0]:
-                # Handle list of text objects
-                return " ".join([item.get("text", "") for item in field_value if isinstance(item, dict)])
-            else:
-                # Handle simple list of strings
-                return " ".join([str(item) for item in field_value if item])
-        
-        # Handle description as string that looks like a Python list representation
-        # E.g. "['text part 1', 'text part 2']"
-        if field_name == "description" and isinstance(field_value, str) and field_value.startswith("[") and field_value.endswith("]"):
-            try:
-                # Try to convert string representation of list back to actual list
-                import ast
-                list_value = ast.literal_eval(field_value)
-                if isinstance(list_value, list):
-                    return " ".join([str(item) for item in list_value if item])
-            except (SyntaxError, ValueError):
-                # If parsing fails, just return the original string
-                pass
-        
-        # Handle synonyms - normalize to list of strings
-        if field_name == "synonyms":
-            if isinstance(field_value, list):
-                # If list contains dictionaries with 'name' field
-                if field_value and isinstance(field_value[0], dict) and "name" in field_value[0]:
-                    return [item.get("name", "") for item in field_value if isinstance(item, dict) and "name" in item]
-                # If list contains dictionaries with 'synonym' field
-                elif field_value and isinstance(field_value[0], dict) and "synonym" in field_value[0]:
-                    return [item.get("synonym", "") for item in field_value if isinstance(item, dict) and "synonym" in item]
-                # Already a list of strings
-                return field_value
-            # Convert single string to list
-            elif isinstance(field_value, str):
-                # Handle string representations of lists
-                if field_value.startswith("[") and field_value.endswith("]"):
-                    try:
-                        import ast
-                        list_value = ast.literal_eval(field_value)
-                        if isinstance(list_value, list):
-                            return list_value
-                    except (SyntaxError, ValueError):
-                        pass
-                return [field_value]
-            # Empty or None
-            return []
-        
-        # Handle description - always return as string
-        elif field_name == "description":
-            if isinstance(field_value, dict) and "text" in field_value:
-                return field_value["text"]
-            elif isinstance(field_value, str):
-                return field_value
-            return str(field_value) if field_value is not None else ""
-        
-        # Handle moldb_formula/chemical_formula - normalize format
-        elif field_name in ["moldb_formula", "chemical_formula"]:
-            if isinstance(field_value, dict) and "formula" in field_value:
-                return field_value["formula"]
-            return field_value
-            
-        # Default case - return as is
-        return field_value
-
-    def _check_and_apply_aliases(self, fields: list, result: dict):
-        """
-        Check for missing fields and apply aliases if needed.
-        
-        Args:
-            fields: List of fields to check
-            result: Dictionary to update with missing fields
-        """
-        if not fields:
-            return
-        
-        for field in fields:
-            # Skip if field already exists in result (avoid overwriting)
-            if field in result:
-                continue
-                
-            # Check for aliases
-            if field in field_alias_map:
-                for alias in field_alias_map[field]:
-                    if alias in result:
-                        result[field] = result[alias]
-                        break
-
-
-class ApiFallbackCoordinator:
-    """
-    Coordinates the fallback mechanism for HMDB API requests.
-    Isolates and orchestrates the fallback system from the main pipeline logic.
+    # Mock data generation method removed - using real API responses only
     
-    Uses a strategy pattern to:
-    1. Decide which fields are missing
-    2. Determine which endpoints to query based on the endpoint_map
-    3. Fetch the missing fields using the hmdb_client
-    4. Handle retries and rate limiting
-    5. Merge and return the results
-    """
-    
-    def __init__(self, hmdb_client: HMDBApiClient, max_retries: int = 3, backoff_factor: float = 1.5):
-        """
-        Initialize the ApiFallbackCoordinator.
-        
-        Args:
-            hmdb_client: The HMDB API client to use for fetching data
-            max_retries: Maximum number of retries for failed requests
-            backoff_factor: Factor to increase delay between retries
-        """
-        self.hmdb_client = hmdb_client
-        self.max_retries = max_retries
-        self.backoff_factor = backoff_factor
-    
-    def decide_and_fetch(self, missing_fields: list, known_hmdb_id: str, existing_data: Dict[str, Any] = None) -> Dict[str, Any]:
-        """
-        Decide which endpoints to query and fetch the missing fields.
-        
-        Args:
-            missing_fields: List of fields that need to be fetched
-            known_hmdb_id: The HMDB ID of the metabolite
-            existing_data: Optional dictionary of data that has already been fetched
-            
-        Returns:
-            Dictionary with all data, including the newly fetched fields
-        """
-        if existing_data is None:
-            existing_data = {}
-        
-        # Filter out fields that are already present in existing_data
-        fields_to_fetch = [field for field in missing_fields if field not in existing_data]
-        
-        if not fields_to_fetch:
-            print("No fields to fetch, all fields already present in existing data")
-            return existing_data
-            
-        # Special handling for formula-based fields if chemical_formula is available
-        if "chemical_formula" in existing_data and any(field in ["ions", "ion", "monoisotopic_molecular_weight", "smiles", "inchi", "inchikey"] for field in fields_to_fetch):
-            formula = existing_data.get("chemical_formula")
-            if formula:
-                print(f"Using chemical formula '{formula}' for formula-based fallback")
-                
-                # Identify all fields that might be available through the formula/ion endpoint
-                ion_endpoint_fields = endpoint_map.get("ion", [])
-                
-                # Include alias-mapped fields too
-                for field in fields_to_fetch:
-                    if field in field_alias_map:
-                        for alias in field_alias_map[field]:
-                            if alias in ion_endpoint_fields and alias not in ion_endpoint_fields:
-                                ion_endpoint_fields.append(alias)
-                
-                # Filter fields_to_fetch to only those that might be in the ion endpoint
-                formula_fields = [field for field in fields_to_fetch 
-                                 if field in ion_endpoint_fields or
-                                    any(alias in ion_endpoint_fields for alias in field_alias_map.get(field, []))]
-                
-                if formula_fields:
-                    formula_data = self.hmdb_client.fetch_fields_for_formula(formula, formula_fields)
-                    
-                    # Merge formula data with existing data
-                    if formula_data:
-                        existing_data.update(formula_data)
-                        # Update fields_to_fetch to remove fields we just got
-                        fields_to_fetch = [field for field in fields_to_fetch if field not in formula_data]
-        
-        # If there are still fields to fetch, proceed with normal ID-based fallback
-        if fields_to_fetch:
-            # Attempt to fetch the missing fields with retries
-            fetched_data = self._fetch_with_retries(fields_to_fetch, known_hmdb_id)
-            
-            # Merge the fetched data with the existing data
-            existing_data.update(fetched_data)
-        
-        # Check if any fields are still missing
-        final_missing_fields = [field for field in missing_fields if field not in existing_data]
-        if final_missing_fields:
-            print(f"Warning: Some fields could not be fetched: {final_missing_fields}")
-        
-        return existing_data
-    
-    def discover_hmdb_id_by_name(self, name: str) -> str:
-        """
-        Discover HMDB ID by name using the search endpoint.
-        This should be used BEFORE field-based fallback when only a name is known.
-        
-        Args:
-            name: The metabolite name to search for
-            
-        Returns:
-            HMDB ID if a single match is found, empty string otherwise
-        """
-        if not name:
-            return ""
-            
-        # Search for metabolites by name
-        matches = self.hmdb_client.search_by_name(name)
-        
-        # If exactly one match, return its HMDB ID
-        if len(matches) == 1:
-            hmdb_id = matches[0].get("hmdb_id", "")
-            if hmdb_id:
-                print(f"Found HMDB ID {hmdb_id} for name '{name}'")
-                return hmdb_id
-        
-        # If multiple matches, this is ambiguous
-        elif len(matches) > 1:
-            print(f"Found multiple matches for name '{name}'. Disambiguation needed.")
-            # In a real implementation, you might return options for disambiguation
-        
-        # No matches found
-        return ""
-    
-    def _fetch_with_retries(self, fields: list, hmdb_id: str) -> Dict[str, Any]:
-        """
-        Fetch fields with retry logic.
-        
-        Args:
-            fields: List of fields to fetch
-            hmdb_id: The HMDB ID of the metabolite
-            
-        Returns:
-            Dictionary with fetched data
-        """
-        result = {}
-        retry_count = 0
-        total_attempts = 0  # Track total attempts to prevent infinite loops
-        max_total_attempts = self.max_retries * 3  # Hard limit on total attempts
-        
-        # Make a copy of fields to avoid modifying the original list
-        fields_to_fetch = fields.copy()
-        
-        while retry_count < self.max_retries and total_attempts < max_total_attempts:
-            total_attempts += 1
-            
-            # Safety check - if we have no fields left to fetch, we're done
-            if not fields_to_fetch:
-                break
-            
-            try:
-                # Use the client's fetch_fields_for_hmdb_id method to get the data
-                fetched_data = self.hmdb_client.fetch_fields_for_hmdb_id(hmdb_id, fields_to_fetch)
-                
-                if fetched_data:
-                    # If we got some data, merge it with our result
-                    result.update(fetched_data)
-                    
-                    # Check if we got all the fields we needed
-                    remaining_fields = [field for field in fields_to_fetch if field not in result]
-                    
-                    # If some fields were skipped due to endpoint restrictions, don't keep trying to fetch them
-                    if total_attempts >= 2:  # Only start checking for impossible fields after a couple attempts
-                        # If we're still trying for the same fields after multiple attempts, they might be impossible
-                        if remaining_fields == fields_to_fetch:
-                            print(f"Warning: After {total_attempts} attempts, still cannot fetch fields: {remaining_fields}")
-                            print("These fields may be impossible to fetch in the current context. Stopping retries.")
-                            break
-                    
-                    if not remaining_fields:
-                        # If we got all fields, we're done
-                        return result
-                    
-                    # Update fields to only include the remaining ones for the next attempt
-                    fields_to_fetch = remaining_fields
-                
-                # If we didn't get all fields but made some progress, reset retry count
-                if len(result) > 0:
-                    retry_count = 0
-                else:
-                    # If we didn't make any progress, increment retry count
-                    retry_count += 1
-                    
-                    # Add backoff delay
-                    delay = self.backoff_factor ** retry_count
-                    print(f"Retrying in {delay:.2f} seconds... (Attempt {retry_count + 1}/{self.max_retries})")
-                    time.sleep(delay)
-            
-            except Exception as e:
-                # If there was an exception, increment retry count
-                retry_count += 1
-                
-                # Add backoff delay
-                delay = self.backoff_factor ** retry_count
-                print(f"Error fetching data: {e}. Retrying in {delay:.2f} seconds... (Attempt {retry_count + 1}/{self.max_retries})")
-                time.sleep(delay)
-        
-        # If we've exhausted all retries or hit the total attempts limit
-        if total_attempts >= max_total_attempts:
-            print(f"Warning: Maximum total attempts ({max_total_attempts}) reached. Stopping to prevent infinite loops.")
-        else:
-            print(f"Warning: Maximum retries ({self.max_retries}) reached. Some fields may not have been fetched.")
-        
-        return result
-    
-    def analyze_missing_fields(self, data: Dict[str, Any], required_fields: list) -> list:
-        """
-        Analyze a data dictionary to determine which required fields are missing.
-        Takes into account field aliases when determining if a field is present.
-        
-        Args:
-            data: Dictionary of data to analyze
-            required_fields: List of fields that are required
-            
-        Returns:
-            List of fields that are missing from the data
-        """
-        if not data:
-            return required_fields
-        
-        missing_fields = []
-        for field in required_fields:
-            # Field is directly present in data
-            if field in data:
-                continue
-                
-            # Check if any aliases of the field are present in data
-            if field in field_alias_map:
-                alias_found = False
-                for alias in field_alias_map[field]:
-                    if alias in data:
-                        alias_found = True
-                        break
-                if alias_found:
-                    continue
-            
-            # If we get here, neither the field nor any of its aliases were found
-            missing_fields.append(field)
-            
-        return missing_fields
-    
-    def integrate_with_pipeline(self, pipeline_result: Dict[str, Any], hmdb_id: str, required_fields: list) -> Dict[str, Any]:
-        """
-        Integrate the fallback coordinator with the main pipeline.
-        This is a high-level method that can be called directly from the pipeline.
-        
-        Args:
-            pipeline_result: The current result from the pipeline (may be incomplete)
-            hmdb_id: The HMDB ID for the metabolite
-            required_fields: List of fields that are required for the result
-            
-        Returns:
-            Dictionary with all required fields, using fallback mechanisms if needed
-        """
-        # First populate any missing fields from aliases that might already be present
-        pipeline_result = self._populate_fields_from_aliases(pipeline_result)
-        
-        # If we don't have an HMDB ID but have a name, try to discover the ID
-        if not hmdb_id and "name" in pipeline_result:
-            name = pipeline_result.get("name")
-            discovered_hmdb_id = self.discover_hmdb_id_by_name(name)
-            
-            if discovered_hmdb_id:
-                hmdb_id = discovered_hmdb_id
-                # Add the discovered ID to the result
-                pipeline_result["hmdb_id"] = hmdb_id
-        
-        # If we still don't have an HMDB ID, we can't proceed with field-based fallback
-        if not hmdb_id:
-            print("Error: Cannot perform field-based fallback without an HMDB ID")
-            return pipeline_result
-        
-        # Analyze what fields are missing from the current result
-        missing_fields = self.analyze_missing_fields(pipeline_result, required_fields)
-        
-        if not missing_fields:
-            # If nothing is missing, return the result as is
-            return pipeline_result
-        
-        print(f"Pipeline result is missing {len(missing_fields)} fields: {missing_fields}")
-        print(f"Using fallback mechanism to fetch missing fields...")
-        
-        # Use the fallback mechanism to fetch missing fields
-        complete_result = self.decide_and_fetch(missing_fields, hmdb_id, pipeline_result)
-        
-        # Final step: populate any remaining fields from aliases
-        complete_result = self._populate_fields_from_aliases(complete_result)
-        
-        # Verify all fields were obtained
-        final_missing = self.analyze_missing_fields(complete_result, required_fields)
-        
-        if final_missing:
-            print(f"Warning: After fallback, still missing {len(final_missing)} fields: {final_missing}")
-        else:
-            print("All required fields have been successfully fetched!")
-        
-        return complete_result
-
-    def _populate_fields_from_aliases(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Populate fields in the data using their aliases when the primary field is missing.
-        This ensures that callers can consistently access data by the field name they requested,
-        even if the API returned it under a different name.
-        
-        Args:
-            data: Dictionary of data to process
-            
-        Returns:
-            Dictionary with fields populated from aliases where needed
-        """
-        if not data:
-            return data
-            
-        # Copy to avoid modifying during iteration
-        result = data.copy()
-        
-        # For each field alias mapping
-        for field, aliases in field_alias_map.items():
-            # If the field is missing, try to populate it from an alias
-            if field not in result:
-                for alias in aliases:
-                    if alias in result:
-                        result[field] = result[alias]
-                        break
-        
-        return result
-
-
-def create_test_client(with_cache=False):
-    """
-    Create a test client for HMDB API with optional caching.
-    Use this function to test if missing fields are due to cached responses.
-    
-    Args:
-        with_cache: Whether to use caching (default: False)
-        
-    Returns:
-        HMDBApiClient instance configured according to parameters
-    """
-    rate_limiter = RateLimiter()
-    return HMDBApiClient(rate_limiter, use_cache=with_cache)
-
-
-if __name__ == "__main__":
-    rate_limiter = RateLimiter()
-    client = HMDBApiClient(rate_limiter)
-
-    # # Run tests for all endpoints
-    # results = client.test_all_endpoints()
-    
-    # # Print results for each endpoint
-    # for name, result in results.items():
-    #     print(f"\n--- {name} Response ---")
-    #     print(result)
-
-    # # Save results to a text file in a nicely formatted way
-    # with open("hmdb_results_with_cache.txt", "w") as f:
-    #     for name, result in results.items():
-    #         f.write(f"\n--- {name} Response ---\n")
-    #         if result:
-    #             f.write(json.dumps(result, indent=2))
-    #         else:
-    #             f.write("No Data Retrieved\n")
-    #         f.write("\n")
-    
-    # Test the new dynamic endpoint selection functionality
-    def test_dynamic_endpoint_selection():
-        print("\n=== Testing Dynamic Endpoint Selection ===")
-        
-        # Test 1: Get basic fields from a metabolite
-        test_hmdb_id = "HMDB0000001"  # Glucose
-        test_fields = ["hmdb_id", "name", "description", "synonyms"]
-        
-        print(f"\nTest 1: Fetching basic fields for {test_hmdb_id}")
-        print(f"Fields requested: {test_fields}")
-        
-        # First, see which endpoints are selected
-        endpoints = client.select_endpoints_for_fields(test_fields)
-        print(f"Endpoints selected: {endpoints}")
-        
-        # Now fetch the fields
-        result = client.fetch_fields_for_hmdb_id(test_hmdb_id, test_fields)
-        print("Result:")
-        print(json.dumps(result, indent=2))
-        
-        # Test 2: Get fields from different endpoints
-        test_fields_2 = ["normal_concentrations", "enzyme_name", "health_effect"]
-        
-        print(f"\nTest 2: Fetching fields from different endpoints for {test_hmdb_id}")
-        print(f"Fields requested: {test_fields_2}")
-        
-        # See which endpoints are selected
-        endpoints = client.select_endpoints_for_fields(test_fields_2)
-        print(f"Endpoints selected: {endpoints}")
-        
-        # Fetch the fields
-        result = client.fetch_fields_for_hmdb_id(test_hmdb_id, test_fields_2)
-        print("Result:")
-        print(json.dumps(result, indent=2))
-        
-        # Test 3: Test optimizing to avoid metabolites endpoint
-        test_fields_3 = ["enzyme_name", "biological_role", "natural_process"]
-        
-        print(f"\nTest 3: Testing optimization to avoid metabolites endpoint for {test_hmdb_id}")
-        print(f"Fields requested: {test_fields_3}")
-        
-        # See which endpoints are selected
-        endpoints = client.select_endpoints_for_fields(test_fields_3)
-        print(f"Endpoints selected: {endpoints}")
-        
-        # Fetch the fields
-        result = client.fetch_fields_for_hmdb_id(test_hmdb_id, test_fields_3)
-        print("Result:")
-        print(json.dumps(result, indent=2))
-    
-    # Test the new ApiFallbackCoordinator
-    def test_api_fallback_coordinator():
-        print("\n=== Testing API Fallback Coordinator ===")
-        
-        # Create a fallback coordinator
-        coordinator = ApiFallbackCoordinator(client, max_retries=2)
-        
-        # Test 1: Simple fallback with existing data
-        test_hmdb_id = "HMDB0000001"  # Glucose
-        existing_data = {
-            "hmdb_id": "HMDB0000001",
-            "name": "Glucose"
-        }
-        missing_fields = ["description", "synonyms", "moldb_formula"]
-        
-        print(f"\nTest 1: Fallback with existing data for {test_hmdb_id}")
-        print(f"Existing data: {existing_data}")
-        print(f"Missing fields: {missing_fields}")
-        
-        result = coordinator.decide_and_fetch(missing_fields, test_hmdb_id, existing_data)
-        print("Result after fallback:")
-        print(json.dumps(result, indent=2))
-        
-        # Test 2: Fallback with empty existing data
-        test_hmdb_id_2 = "HMDB0000122"  # Another metabolite
-        missing_fields_2 = ["name", "description", "normal_concentrations"]
-        
-        print(f"\nTest 2: Fallback with empty existing data for {test_hmdb_id_2}")
-        print(f"Missing fields: {missing_fields_2}")
-        
-        result = coordinator.decide_and_fetch(missing_fields_2, test_hmdb_id_2)
-        print("Result after fallback:")
-        print(json.dumps(result, indent=2))
-        
-        # Test 3: Fallback with multiple endpoints and retries
-        test_hmdb_id_3 = "HMDB0000001"  # Glucose
-        missing_fields_3 = ["enzyme_name", "biological_role", "natural_process"]
-        
-        print(f"\nTest 3: Fallback with multiple endpoints for {test_hmdb_id_3}")
-        print(f"Missing fields: {missing_fields_3}")
-        
-        result = coordinator.decide_and_fetch(missing_fields_3, test_hmdb_id_3)
-        print("Result after fallback:")
-        print(json.dumps(result, indent=2))
-        
-        # Test 4: Integration with pipeline
-        pipeline_result = {
-            "hmdb_id": "HMDB0000001",
-            "name": "Glucose",
-            "description": "An aldohexose that occurs naturally in the free state and is a constituent of many oligosaccharides and polysaccharides."
-        }
-        required_fields = ["hmdb_id", "name", "description", "synonyms", "moldb_formula", "enzyme_name"]
-        
-        print(f"\nTest 4: Integration with pipeline for {test_hmdb_id}")
-        print(f"Pipeline result: {pipeline_result}")
-        print(f"Required fields: {required_fields}")
-        
-        complete_result = coordinator.integrate_with_pipeline(pipeline_result, test_hmdb_id, required_fields)
-        print("Complete result after pipeline integration:")
-        print(json.dumps(complete_result, indent=2))
-        
-        # Test 5: Name-based discovery (when no HMDB ID is known)
-        pipeline_result_no_id = {
-            "name": "Glucose"
-        }
-        required_fields_5 = ["hmdb_id", "name", "description", "moldb_formula"]
-        
-        print(f"\nTest 5: Name-based discovery without HMDB ID")
-        print(f"Pipeline result: {pipeline_result_no_id}")
-        print(f"Required fields: {required_fields_5}")
-        
-        complete_result = coordinator.integrate_with_pipeline(pipeline_result_no_id, "", required_fields_5)
-        print("Complete result after name-based discovery and fallback:")
-        print(json.dumps(complete_result, indent=2))
-        
-        # Test 6: Formula-based fallback
-        pipeline_result_with_formula = {
-            "hmdb_id": "HMDB0000001",
-            "name": "Glucose",
-            "chemical_formula": "C6H12O6"  # Glucose formula
-        }
-        required_fields_6 = ["hmdb_id", "name", "chemical_formula", "monoisotopic_molecular_weight", "ions"]
-        
-        print(f"\nTest 6: Formula-based fallback")
-        print(f"Pipeline result: {pipeline_result_with_formula}")
-        print(f"Required fields: {required_fields_6}")
-        
-        complete_result = coordinator.integrate_with_pipeline(pipeline_result_with_formula, "HMDB0000001", required_fields_6)
-        print("Complete result after formula-based fallback:")
-        print(json.dumps(complete_result, indent=2))
-    
-    # Uncomment to run the tests
-    # test_dynamic_endpoint_selection()
-    test_api_fallback_coordinator()
-    
-    # Example of how to use this system in a pipeline
-    def pipeline_usage_example():
-        print("\n=== Pipeline Usage Example ===")
-        
-        # 1. Create the necessary components
-        rate_limiter = RateLimiter()
-        client = HMDBApiClient(rate_limiter)
-        fallback_coordinator = ApiFallbackCoordinator(client)
-        
-        # 2. Scenario 1: We know the name but not the HMDB ID
-        print("\nScenario 1: We know the metabolite name but not its HMDB ID")
-        
-        # This is what we might get from Neo4j or entity extraction
-        extracted_data = {
-            "name": "Glucose",
-            "description": "A simple sugar"
-        }
-        
-        # Define what fields we need for our application
-        required_fields = ["hmdb_id", "name", "description", "synonyms", "moldb_formula", "normal_concentrations"]
-        
-        print(f"Extracted data: {extracted_data}")
-        print(f"Required fields: {required_fields}")
-        
-        # Use the fallback coordinator to handle discovery and field fetching
-        result = fallback_coordinator.integrate_with_pipeline(extracted_data, "", required_fields)
-        
-        print("\nFinal enriched data:")
-        print(json.dumps(result, indent=2))
-        
-        # 3. Scenario 2: We know the HMDB ID but need additional fields
-        print("\nScenario 2: We know the HMDB ID but need additional fields")
-        
-        # This is what we might get from Neo4j
-        neo4j_data = {
-            "hmdb_id": "HMDB0000042",  # Another metabolite
-            "name": "Some Metabolite",
-            "chemical_formula": "C5H10O5"
-        }
-        
-        # Define what fields we need for our application
-        required_fields = ["hmdb_id", "name", "description", "synonyms", "moldb_formula", 
-                          "normal_concentrations", "biospecimen_normal"]
-        
-        print(f"Neo4j data: {neo4j_data}")
-        print(f"Required fields: {required_fields}")
-        
-        # Use the fallback coordinator to fetch missing fields
-        result = fallback_coordinator.integrate_with_pipeline(neo4j_data, neo4j_data["hmdb_id"], required_fields)
-        
-        print("\nFinal enriched data:")
-        print(json.dumps(result, indent=2))
-    
-    # Comment/uncomment to run the pipeline example
-    pipeline_usage_example()
+# End of HMDBApiClient class

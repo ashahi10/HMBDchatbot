@@ -12,6 +12,7 @@ router = APIRouter()
 class QueryRequest(BaseModel):
     question: str
     session_id: Optional[str] = None
+    spectrum_mode: Optional[bool] = False
 
 class CacheClearRequest(BaseModel):
     cache_type: Optional[str] = None
@@ -252,7 +253,8 @@ async def query_endpoint(query_request: QueryRequest, request: Request):
             async for sse_message in pipeline.run_pipeline(
                 user_question=query_request.question,
                 conversation_history=recent_turns,
-                relevant_history=relevant_turns
+                relevant_history=relevant_turns,
+                spectrum_mode=query_request.spectrum_mode
             ):
                 # Parse SSE message to extract content
                 try:

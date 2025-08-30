@@ -44,10 +44,25 @@ class QueryDecisionService:
         r"(?:can|could)\s+you\s+(?:give|provide)\s+(?:me|us)\s+(?:a|an|some)\s+(?:explanation|overview|insight)\s+(?:about|on|into)\s+"
     ]
     
-    # List of ambiguous entities or concepts that should always use the pipeline
+    # List of entities or concepts that should always trigger the database pipeline
     REQUIRE_QUERY_ENTITIES = {
-        "metabolism", "citric acid", "hmdb", "inchi", "smiles", "kegg", "pubchem", 
-        "pathway", "metabolite", "enzyme", "protein", "gene"
+        # Basic metabolomics terms
+        "metabolite", "metabolites", "compound", "compounds", "molecule", "molecules",
+        # Common metabolites
+        "glucose", "fructose", "citric acid", "pyruvate", "lactate", "alanine", "glycine",
+        "dopamine", "serotonin", "acetylcholine", "creatine", "urea", "cholesterol",
+        # Chemical identifiers and databases
+        "hmdb", "inchi", "inchikey", "smiles", "kegg", "pubchem", "chebi", "drugbank",
+        # Pathway terms
+        "pathway", "pathways", "metabolic pathway", "biochemical pathway", 
+        # Molecular properties
+        "molecular weight", "chemical formula", "molecular formula", "structure",
+        # Biospecimen terms
+        "concentration", "serum", "plasma", "urine", "csf", "saliva", "tissue",
+        # Biological entities
+        "enzyme", "protein", "gene", "receptor", "transporter",
+        # Analytical terms
+        "spectrum", "spectra", "mass spec", "nmr", "ms/ms", "chromatography"
     }
     
     def __init__(self, memory_confidence_threshold: float = 0.65):
@@ -63,113 +78,134 @@ class QueryDecisionService:
         """
         Check if a query is likely a general question not requiring database access.
         
+        PRIORITY: Database pipeline should be triggered for ANY question that:
+        1. Contains specific metabolites, compounds, or HMDB IDs
+        2. Asks for specific molecular properties, structures, or data
+        3. Contains database-relevant entities or identifiers
+        
+        Only truly general conceptual questions should be handled by general pipeline.
+        
         Args:
             query: The user's question
             
         Returns:
             bool: True if it appears to be a general question
         """
+        query_original = query
         query = query.lower().strip()
         
-        # Special handling for specific education/explanation patterns
-        educational_patterns = {
-            "how does metabolism work in humans": True,
-            "what is metabolism in humans": True,
-            "explain how metabolism works": True
-        }
+        # STEP 1: Immediate database triggers - if any of these are present, use database pipeline
+        immediate_db_triggers = [
+            # Specific lookup phrases
+            "show me", "look up", "find", "search for", "get", "retrieve",
+            # Molecular properties
+            "structure of", "formula for", "molecular weight of", "properties of", 
+            "molecular formula", "chemical formula", "smiles", "inchi", "inchikey",
+            # Database identifiers  
+            "hmdb", "pubchem", "chebi", "kegg", "drugbank", "id for",
+            # Concentration and biospecimen data
+            "concentration", "levels in", "found in", "present in", "biospecimen",
+            # Pathway information
+            "pathway", "pathways", "involved in", "participates in", "metabolic pathway",
+            # Comparison queries
+            "compare", "difference between", "vs", "versus", "relationship between",
+            # Spectrum-related
+            "spectrum", "spectra", "ms", "nmr", "mass spec",
+        ]
         
-        # Check exact matches for known educational patterns
-        for pattern, result in educational_patterns.items():
-            if pattern in query:
-                return result
+        # If query contains any immediate DB triggers, use database pipeline
+        for trigger in immediate_db_triggers:
+            if trigger in query:
+                logger.debug(f"Query contains DB trigger '{trigger}': {query_original}")
+                return False
         
-        # Check if the query matches any of the general question patterns
-        for pattern in self.GENERAL_QUESTION_PATTERNS:
-            if re.match(pattern, query):
-                
-                # Even if it matches a pattern, we need more nuanced logic for entities
-                # Special case: Explanatory questions about entities are still general
-                explanatory_patterns = [
-                    r"how\s+does\s+.+\s+work",
-                    r"what\s+is\s+.+\s+in\s+general",
-                    r"explain\s+the\s+concept\s+of\s+",
-                    r"explain\s+what\s+.+\s+is",
-                    r"how\s+does\s+.+\s+function",
+        # STEP 2: Check for specific entities, compounds, or identifiers
+        # Expanded entity patterns for better detection
+        entity_patterns = [
+            # HMDB IDs
+            r'\bhmdb\d+\b',
+            # Chemical formulas (like C6H12O6, CH3CH2OH)
+            r'\b[A-Z][a-z]?[0-9]*(?:[A-Z][a-z]?[0-9]*)*\b',
+            # InChIKeys
+            r'\b[A-Z]{14}-[A-Z]{10}-[A-Z]\b',
+            # Specific metabolite names (capitalized compounds)
+            r'\b[A-Z][a-z]+(?:\s+[A-Z]?[a-z]+)*\s+(?:acid|amine|alcohol|sugar|glucose|fructose)\b',
+            # D- prefixed compounds (like D-Glucose, D-Fructose)
+            r'\b[DL]-[A-Z][a-z]+\b',
+            # Numbers that could be concentrations or measurements
+            r'\b\d+\.?\d*\s*(?:mg|μg|ng|ml|μl|mm|μm|nm)\b',
+        ]
+        
+        # Check for entity patterns
+        for pattern in entity_patterns:
+            if re.search(pattern, query):
+                logger.debug(f"Query contains entity pattern '{pattern}': {query_original}")
+                return False
+        
+        # STEP 3: Check for entities from the require query list
+        for entity in self.REQUIRE_QUERY_ENTITIES:
+            if entity in query:
+                # Only allow general if it's VERY clearly conceptual/educational
+                very_general_contexts = [
+                    f"what is {entity} in general",
+                    f"explain the concept of {entity}",
+                    f"what does {entity} mean",
+                    f"define {entity}",
                 ]
                 
-                # If it's clearly an explanatory question, treat as general regardless of entities
-                if any(re.search(exp_pattern, query) for exp_pattern in explanatory_patterns):
-                    logger.debug(f"Query identified as explanatory general question: {query}")
-                    return True
+                # Check if it matches very general patterns
+                is_very_general = any(context in query for context in very_general_contexts)
                 
-                # Check for specific database lookup indicators
-                db_lookup_indicators = [
-                    "show me", "look up", "find", "search for", "structure of", 
-                    "formula for", "molecular weight of", "properties of", "id for"
-                ]
-                
-                # If it contains specific lookup phrases, it's likely a DB question
-                if any(indicator in query for indicator in db_lookup_indicators):
+                if not is_very_general:
+                    logger.debug(f"Query contains DB entity '{entity}' without general context: {query_original}")
                     return False
-                
-                # Check for compound words like "metabolism in humans" which should be general
-                compound_educational_phrases = [
-                    "in humans", "in cells", "in the body", "process of", "concept of",
-                    "general overview", "basics of", "introduction to"
-                ]
-                
-                # Check if the query contains both an entity and an educational context
-                for entity in self.REQUIRE_QUERY_ENTITIES:
-                    if entity in query:
-                        # Check if it's in an educational context
-                        for phrase in compound_educational_phrases:
-                            if phrase in query and entity in query:
-                                return True
-                                
-                        # If it matches explanation patterns about the entity, still general
-                        explanation_about_entity = [
-                            rf"what\s+is\s+{re.escape(entity)}",
-                            rf"explain\s+{re.escape(entity)}",
-                            rf"how\s+does\s+{re.escape(entity)}\s+work",
-                            rf"why\s+is\s+{re.escape(entity)}"
-                        ]
-                        
-                        if any(re.search(pattern, query) for pattern in explanation_about_entity):
-                            logger.debug(f"Query is explanatory about entity '{entity}': {query}")
-                            return True
-                            
-                        logger.debug(f"Query matches general pattern but contains DB entity '{entity}': {query}")
-                        return False
-                
-                logger.debug(f"Query identified as general question: {query}")
+        
+        # STEP 4: Only NOW check for general question patterns
+        # But be much more restrictive
+        
+        # Truly casual conversation patterns (these should be general)
+        casual_patterns = [
+            r"^(?:hi|hello|hey|greetings|howdy)[\s!.?]*$",
+            r"^(?:how\s+are\s+you|what's\s+up|how's\s+it\s+going)[\s!.?]*$",
+            r"^(?:thank|thanks|thank\s+you)[\s!.?]*$",
+            r"^(?:bye|goodbye|see\s+you)[\s!.?]*$",
+        ]
+        
+        for pattern in casual_patterns:
+            if re.match(pattern, query):
+                logger.debug(f"Query is casual conversation: {query_original}")
                 return True
         
-        # Check word count - very short or very long queries are often general
-        word_count = len(query.split())
-        if word_count <= 3 or word_count >= 25:
-            # Short greetings or very lengthy explanatory questions tend to be general
-            # But still check for specific entities with the same nuanced logic
-            
-            # Check for specific database lookup indicators
-            db_lookup_indicators = [
-                "show me", "look up", "find", "search for", "structure of", 
-                "formula for", "molecular weight of", "properties of", "id for"
-            ]
-            
-            if any(indicator in query for indicator in db_lookup_indicators):
-                return False
-                
-            for entity in self.REQUIRE_QUERY_ENTITIES:
-                if entity in query:
-                    # If it's a clearly explanatory question about the entity, still general
-                    if re.search(rf"how\s+does\s+{re.escape(entity)}\s+work", query):
-                        return True
-                        
-                    return False
-            
-            logger.debug(f"Query identified as general based on length ({word_count} words): {query}")
-            return True
-            
+        # Pure methodology or technology questions (without specific compounds)
+        methodology_patterns = [
+            r"^how\s+does\s+(?:mass\s+spectrometry|nmr|lcms|gcms|hplc)\s+work\s*\??\s*$",
+            r"^what\s+is\s+(?:metabolomics|proteomics|genomics|bioinformatics)\s*\??\s*$",
+            r"^explain\s+(?:how\s+)?(?:mass\s+spectrometry|nmr|chromatography)\s+works?\s*\??\s*$",
+            r"^(?:what|how)\s+(?:is|are|does)\s+(?:the\s+)?(?:principle|process|method)\s+of\s+(?:mass\s+spec|nmr|hplc)\s*\??\s*$",
+            r"^define\s+(?:metabolomics|proteomics|genomics|bioinformatics)\s*\??\s*$",
+            r"^what\s+is\s+the\s+principle\s+of\s+chromatography\s*\??\s*$",
+        ]
+        
+        for pattern in methodology_patterns:
+            if re.match(pattern, query):
+                logger.debug(f"Query is pure methodology question: {query_original}")
+                return True
+        
+        # Very broad conceptual questions without specific entities
+        broad_conceptual_patterns = [
+            r"^how\s+does\s+metabolism\s+work\s+in\s+(?:general|humans|cells)$",
+            r"^what\s+is\s+metabolism\s+in\s+(?:general|humans|biology)$",
+            r"^explain\s+(?:the\s+concept\s+of\s+)?metabolism\s+in\s+general$",
+        ]
+        
+        for pattern in broad_conceptual_patterns:
+            if re.match(pattern, query):
+                logger.debug(f"Query is broad conceptual question: {query_original}")
+                return True
+        
+        # STEP 5: Default to database pipeline for safety
+        # If we can't confidently classify it as general, use database pipeline
+        logger.debug(f"Query defaulting to database pipeline for safety: {query_original}")
         return False
     
     def should_use_memory(self, query: str, memory_results: List[Dict], 
