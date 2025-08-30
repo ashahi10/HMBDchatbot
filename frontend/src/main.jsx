@@ -5,8 +5,8 @@ import App from './App.jsx'
 
 const theme = createTheme({
   palette: {
-    primary: { main: '#3b82f6' },
-    secondary: { main: '#f0f7ff' },
+    primary: { main: '#111827', light: '#e5e7eb', dark: '#0b1220', contrastText: '#ffffff' },
+    secondary: { main: '#f3f4f6', light: '#f8fafc', dark: '#e5e7eb' },
     background: { default: '#ffffff', paper: '#ffffff' }
   },
   typography: {

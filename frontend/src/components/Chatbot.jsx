@@ -382,6 +382,7 @@ function ChatMessages({ messages, loading }) {
       if (currentChunk) {
         chunks.push(currentChunk);
       }
+
       currentChunk = {
         userText: msg.content,
         nonSummaryItems: [],
@@ -418,6 +419,8 @@ function ChatMessages({ messages, loading }) {
   if (currentChunk) {
     chunks.push(currentChunk);
   }
+  
+
 
   return (
     <Box sx={{ flex: 1, overflowY: 'auto', p: 2 }}>
@@ -542,62 +545,215 @@ function ChatMessages({ messages, loading }) {
 //
 // Chatbot (the main container)
 //
-function Chatbot() {
+function Chatbot({ selectedSessionId, onSessionChange = () => {}, onConversationUpdate = () => {} }) {
   const [messages, setMessages] = useState([]);
   const [newMessage, setNewMessage] = useState('');
   const [loading, setLoading] = useState(false);
   const [sessionId, setSessionId] = useState(null);
   const [loadingHistory, setLoadingHistory] = useState(false);
+  const [spectrumMode, setSpectrumMode] = useState(false);
+  const [conversationTitle, setConversationTitle] = useState('');
+  const initializationComplete = useRef(false);
+
+  // Handle selected session changes from sidebar
+  useEffect(() => {
+    if (selectedSessionId === 'NEW_CHAT_TRIGGER') {
+      // Explicitly start new conversation
+      startNewConversationInternal();
+    } else if (selectedSessionId && selectedSessionId !== 'NEW_CHAT_TRIGGER') {
+      loadConversation(selectedSessionId);
+    } else if (selectedSessionId === null) {
+      // Clear conversation but don't auto-create new one
+      setMessages([]);
+      setSessionId(null);
+      setConversationTitle('');
+      localStorage.removeItem('chatSessionId');
+    }
+  }, [selectedSessionId]);
 
   // Initialize chat session and load history when component mounts
   useEffect(() => {
-    async function initializeChat() {
-      try {
-        // Try to load session ID from localStorage
-        const savedSessionId = localStorage.getItem('chatSessionId');
+    if (!selectedSessionId && !initializationComplete.current) {
+      initializationComplete.current = true;
+      initializeChat();
+    }
+  }, [selectedSessionId]);
+
+  async function initializeChat() {
+    try {
+      // Try to load session ID from localStorage
+      const savedSessionId = localStorage.getItem('chatSessionId');
+      
+      if (savedSessionId) {
+        // Check if this session exists in conversations list
+        const conversations = JSON.parse(localStorage.getItem('conversationList') || '[]');
+        const existingConversation = conversations.find(conv => conv.id === savedSessionId);
         
-        if (savedSessionId) {
+        if (existingConversation) {
           setSessionId(savedSessionId);
+          // Don't call onSessionChange here to avoid triggering useEffect loop
           
           // Load chat history for existing session
           setLoadingHistory(true);
-          const history = await api.getChatHistory(savedSessionId);
+          const history = api.loadConversationHistory(savedSessionId);
           if (history && history.length > 0) {
             setMessages(history);
+            
+            // Set conversation title from first message if available
+            const firstUserMessage = history.find(msg => msg.role === 'user');
+            if (firstUserMessage) {
+              const title = api.generateConversationTitle(firstUserMessage.content);
+              setConversationTitle(title);
+            }
+          } else {
+            // Try loading from API as fallback
+            const apiHistory = await api.getChatHistory(savedSessionId);
+            if (apiHistory && apiHistory.length > 0) {
+              setMessages(apiHistory);
+              
+              // Set conversation title from first message if available
+              const firstUserMessage = apiHistory.find(msg => msg.role === 'user');
+              if (firstUserMessage) {
+                const title = api.generateConversationTitle(firstUserMessage.content);
+                setConversationTitle(title);
+              }
+            }
           }
           setLoadingHistory(false);
         } else {
-          // Create new session if none exists
-          const { id } = await api.createChat();
-          setSessionId(id);
-          localStorage.setItem('chatSessionId', id);
+          // Session doesn't exist in conversations, clear it
+          localStorage.removeItem('chatSessionId');
+          setSessionId(null);
+          setMessages([]);
         }
-      } catch (error) {
-        console.error('Error initializing chat:', error);
-        // Fallback to create a new session
-        const { id } = await api.createChat();
-        setSessionId(id);
-        localStorage.setItem('chatSessionId', id);
+      } else {
+        // No saved session, start with empty state
+        setSessionId(null);
+        setMessages([]);
       }
+    } catch (error) {
+      console.error('Error initializing chat:', error);
+      setSessionId(null);
+      setMessages([]);
     }
-    
-    initializeChat();
-  }, []);
+  }
+
+  async function startNewConversation() {
+    try {
+      const { id } = await api.createChat();
+      setSessionId(id);
+      setMessages([]);
+      setConversationTitle('');
+      localStorage.setItem('chatSessionId', id);
+      onSessionChange(id);
+      // Don't save conversation here - it will be saved when user sends first message
+    } catch (error) {
+      console.error('Error starting new conversation:', error);
+    }
+  }
+
+  async function startNewConversationInternal() {
+    try {
+      const { id } = await api.createChat();
+      setSessionId(id);
+      setMessages([]);
+      setConversationTitle('');
+      localStorage.setItem('chatSessionId', id);
+      // Don't call onSessionChange here to avoid loop
+      // Don't save conversation here - it will be saved when user sends first message
+    } catch (error) {
+      console.error('Error starting new conversation:', error);
+    }
+  }
+
+  async function loadConversation(conversationId) {
+    try {
+      setLoadingHistory(true);
+      setSessionId(conversationId);
+      localStorage.setItem('chatSessionId', conversationId);
+      
+      // Load conversation history
+      const history = api.loadConversationHistory(conversationId);
+      if (history && history.length > 0) {
+        setMessages(history);
+        
+        // Set conversation title from first message if available
+        const firstUserMessage = history.find(msg => msg.role === 'user');
+        if (firstUserMessage && !conversationTitle) {
+          const title = api.generateConversationTitle(firstUserMessage.content);
+          setConversationTitle(title);
+        }
+      } else {
+        // Try loading from API as fallback
+        const apiHistory = await api.getChatHistory(conversationId);
+        if (apiHistory && apiHistory.length > 0) {
+          setMessages(apiHistory);
+          
+          // Set conversation title from first message if available
+          const firstUserMessage = apiHistory.find(msg => msg.role === 'user');
+          if (firstUserMessage && !conversationTitle) {
+            const title = api.generateConversationTitle(firstUserMessage.content);
+            setConversationTitle(title);
+          }
+        } else {
+          setMessages([]);
+          setConversationTitle('');
+        }
+      }
+    } catch (error) {
+      console.error('Error loading conversation:', error);
+      setMessages([]);
+      setConversationTitle('');
+    } finally {
+      setLoadingHistory(false);
+    }
+  }
 
   async function submitNewMessage() {
     const trimmedMessage = newMessage.trim();
-    if (!trimmedMessage || loading || !sessionId) return;
+    if (!trimmedMessage || loading) return;
+    
+    // If no session exists, create one first
+    if (!sessionId) {
+      const { id } = await api.createChat();
+      setSessionId(id);
+      localStorage.setItem('chatSessionId', id);
+      onSessionChange(id);
+      
+      // Continue with the current session id
+      const currentSessionId = id;
+      await processMessage(trimmedMessage, currentSessionId);
+      return;
+    }
+    
+    await processMessage(trimmedMessage, sessionId);
+  }
 
-    setMessages((prev) => [...prev, { role: 'user', content: trimmedMessage }]);
+  async function processMessage(trimmedMessage, currentSessionId) {
+    const userMessage = { role: 'user', content: trimmedMessage };
+    setMessages((prev) => [...prev, userMessage]);
     setNewMessage('');
     setLoading(true);
 
+    // Generate conversation title if this is the first message
+    // Use the updated messages length instead of stale state
+    setMessages((currentMessages) => {
+      if (currentMessages.length === 1) { // Just added the user message, so length is 1
+        const title = api.generateConversationTitle(trimmedMessage);
+        setConversationTitle(title);
+      }
+      return currentMessages;
+    });
+
     try {
-      for await (const event of api.sendChatMessage(sessionId, trimmedMessage)) {
+      let assistantMessages = [];
+      
+      for await (const event of api.sendChatMessage(currentSessionId, trimmedMessage, spectrumMode)) {
         // Check for session updates
         if (event.section === 'SessionUpdate' && event.sessionId) {
           setSessionId(event.sessionId);
           localStorage.setItem('chatSessionId', event.sessionId);
+          onSessionChange(event.sessionId);
           continue;
         }
         
@@ -615,15 +771,37 @@ function Chatbot() {
             };
           } else {
             // Otherwise, create a new assistant message
-            updated.push({
+            const newAssistantMessage = {
               role: 'assistant',
               section: event.section,
               text: event.text || ''
-            });
+            };
+            updated.push(newAssistantMessage);
+            assistantMessages.push(newAssistantMessage);
           }
           return updated;
         });
       }
+
+      // Save conversation after successful completion
+      setMessages((currentMessages) => {
+        // Only save if we have actual messages
+        if (currentMessages.length > 0) {
+          const title = conversationTitle || api.generateConversationTitle(trimmedMessage);
+          const savedConversation = api.saveConversation(currentSessionId, title, currentMessages);
+          if (savedConversation) {
+            // Use setTimeout to avoid triggering during render
+            setTimeout(() => {
+              onConversationUpdate(); // Notify parent to refresh sidebar
+            }, 50);
+            if (!conversationTitle) {
+              setConversationTitle(title); // Update the title for this session
+            }
+          }
+        }
+        return currentMessages;
+      });
+
     } catch (err) {
       console.error('Error:', err);
       setMessages((prev) => [
@@ -640,18 +818,11 @@ function Chatbot() {
       sx={{
         display: 'flex',
         flexDirection: 'column',
-        height: '100vh',
-        maxHeight: '100vh',
+        height: '100%',
         overflow: 'hidden',
         bgcolor: 'background.default'
       }}
     >
-      <Box sx={{ p: 2, borderBottom: 1, borderColor: 'divider' }}>
-        <Typography variant="h6" component="h1">
-          Metabolites Knowledge Assistant
-        </Typography>
-      </Box>
-
       {loadingHistory ? (
         <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', flexGrow: 1 }}>
           <CircularProgress size={40} />
@@ -664,11 +835,9 @@ function Chatbot() {
           <Box
             sx={{
               flexGrow: 1,
-              p: 2,
               overflowY: 'auto',
               display: 'flex',
-              flexDirection: 'column',
-              gap: 2
+              flexDirection: 'column'
             }}
           >
             <ChatMessages messages={messages} loading={loading} />
@@ -679,6 +848,8 @@ function Chatbot() {
             setNewMessage={setNewMessage}
             submitNewMessage={submitNewMessage}
             isLoading={loading}
+            spectrumMode={spectrumMode}
+            setSpectrumMode={setSpectrumMode}
           />
         </>
       )}

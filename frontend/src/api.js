@@ -89,13 +89,14 @@ export default {
   },
 
   // sendChatMessage now automatically processes the SSE stream.
-  sendChatMessage: async function* (chatId, message) {
+  sendChatMessage: async function* (chatId, message, spectrumMode = false) {
     const response = await fetch(`${API_URL}/query`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ 
         question: message,
-        session_id: chatId 
+        session_id: chatId,
+        spectrum_mode: spectrumMode
       }),
     });
     
@@ -141,6 +142,89 @@ export default {
     } catch (error) {
       console.error('Error fetching chat history:', error);
       return [];
+    }
+  },
+
+  // Conversation management functions
+  saveConversation: (sessionId, title, messages) => {
+    try {
+      const conversationData = {
+        id: sessionId,
+        title: title || 'New Conversation',
+        lastModified: new Date().toISOString(),
+        messageCount: Math.floor(messages.length / 2), // Approximate user messages
+        firstMessage: messages.find(m => m.role === 'user')?.content || '',
+        preview: messages.find(m => m.role === 'user')?.content?.substring(0, 50) || ''
+      };
+
+      // Save conversation metadata
+      const conversations = JSON.parse(localStorage.getItem('conversationList') || '[]');
+      const existingIndex = conversations.findIndex(conv => conv.id === sessionId);
+      
+      if (existingIndex >= 0) {
+        conversations[existingIndex] = conversationData;
+      } else {
+        conversations.unshift(conversationData); // Add to beginning
+      }
+      
+      // Keep only last 50 conversations
+      const trimmedConversations = conversations.slice(0, 50);
+      localStorage.setItem('conversationList', JSON.stringify(trimmedConversations));
+      
+      // Save full conversation data
+      localStorage.setItem(`chatHistory_${sessionId}`, JSON.stringify(messages));
+      
+      return conversationData;
+    } catch (error) {
+      console.error('Error saving conversation:', error);
+      return null;
+    }
+  },
+
+  loadConversationHistory: (sessionId) => {
+    try {
+      const messages = localStorage.getItem(`chatHistory_${sessionId}`);
+      return messages ? JSON.parse(messages) : [];
+    } catch (error) {
+      console.error('Error loading conversation history:', error);
+      return [];
+    }
+  },
+
+  generateConversationTitle: (firstMessage) => {
+    // Generate a meaningful title from the first message
+    if (!firstMessage) return 'New Conversation';
+    
+    const message = firstMessage.trim();
+    
+    // Remove common question words and clean up
+    const cleanMessage = message
+      .replace(/^(what|how|why|when|where|who|can|could|would|should|is|are|do|does)\s+/i, '')
+      .replace(/\?+$/, '')
+      .trim();
+    
+    // Truncate and capitalize
+    const title = cleanMessage.length > 40 
+      ? cleanMessage.substring(0, 40) + '...'
+      : cleanMessage;
+      
+    return title.charAt(0).toUpperCase() + title.slice(1) || 'New Conversation';
+  },
+
+  deleteConversation: (sessionId) => {
+    try {
+      // Remove from conversation list
+      const conversations = JSON.parse(localStorage.getItem('conversationList') || '[]');
+      const updatedConversations = conversations.filter(conv => conv.id !== sessionId);
+      localStorage.setItem('conversationList', JSON.stringify(updatedConversations));
+      
+      // Remove conversation data
+      localStorage.removeItem(`chatHistory_${sessionId}`);
+      
+      return true;
+    } catch (error) {
+      console.error('Error deleting conversation:', error);
+      return false;
     }
   }
 };
