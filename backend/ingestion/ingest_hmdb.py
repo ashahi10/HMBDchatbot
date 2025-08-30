@@ -18,16 +18,16 @@ NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD")
 BATCH_SIZE = 10000
 SKIP_CLEAR = True  # Set True to skip clearing Neo4j
 
-# Explicit XML file paths to avoid directory issues
+# XML file paths - files should be placed in the xml files/ folder
 XML_FILES = [
-    "HMDB_DATA/csf_metabolites.xml",
-    "HMDB_DATA/saliva_metabolites.xml",
-    "HMDB_DATA/serum_metabolites.xml",
-    "HMDB_DATA/sweat_metabolites.xml",
-    "HMDB_DATA/urine_metabolites.xml",
-    "HMDB_DATA/feces_metabolites.xml",
-    "HMDB_DATA/hmdb_proteins.xml",
-    "HMDB_DATA/hmdb_metabolites.xml",
+    "xml files/csf_metabolites.xml",
+    "xml files/saliva_metabolites.xml",
+    "xml files/serum_metabolites.xml",
+    "xml files/sweat_metabolites.xml",
+    "xml files/urine_metabolites.xml",
+    "xml files/feces_metabolites.xml",
+    "xml files/hmdb_proteins.xml",
+    "xml files/hmdb_metabolites.xml",
 ]
 
 # --------------- LOGGING ----------------
