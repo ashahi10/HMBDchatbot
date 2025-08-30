@@ -3,6 +3,17 @@
 ## Project Overview
 Developed an intelligent, LLM-driven chatbot that answers complex user questions about metabolites by leveraging a Neo4j Knowledge Graph (KG), HMDB API, and advanced LLM reasoning.
 
+## Frontend Interface
+
+![HMDB Chatbot Interface](screenshots/chatbot-interface.png)
+
+The chatbot provides a clean, intuitive interface where users can:
+- Ask complex questions about metabolites and their properties
+- Get detailed answers with scientific citations and references
+- View concentration data across different biospecimens
+- Access PubMed links for further research
+- Navigate through conversation history
+
 ## Directory Structure
 ```
 .
@@ -22,6 +33,7 @@ Developed an intelligent, LLM-driven chatbot that answers complex user questions
 │   │   ├── components/       # React components
 │   │   └── hooks/           # Custom React hooks
 │   └── package.json         # Node.js dependencies
+├── screenshots/               # Interface screenshots for documentation
 └── README.md               # This file
 ```
 
